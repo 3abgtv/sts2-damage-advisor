@@ -498,6 +498,8 @@ public partial class AdvisorRoot : CanvasLayer
                 if (e.Vulnerable > 0) parts.Add($"易伤{e.Vulnerable}");
                 if (e.StrengthLoss > 0) parts.Add($"敌力量-{e.StrengthLoss}");
                 if (e.Discard > 0) parts.Add($"弃{e.Discard}");
+                if (e.KeywordsText.Length > 0) parts.Add($"[{e.KeywordsText}]");
+
                 if (e.Note.Length > 0) parts.Add($"[{e.Note}]");
                 lines.Add($"  {e.Name}  {string.Join(" ", parts)}");
             }
@@ -582,6 +584,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 

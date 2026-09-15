@@ -59,6 +59,20 @@ internal sealed class CardEffect
     /// <summary>毒性爆发：打出后立即触发一次中毒伤害。</summary>
 
     public bool TriggersPoisonNow { get; init; }
+
+
+    /// <summary>奇巧（Sly）：被丢弃时会自动打出该牌（不花能量）。</summary>
+
+
+    public bool IsSly { get; init; }
+
+
+
+    /// <summary>词条显示文本（消耗/保留/固有/奇巧/虚无/不可打出）。</summary>
+
+
+
+    public string KeywordsText { get; init; } = "";
     public bool Supported { get; init; } = true;
     public string Note { get; init; } = "";
     public CardModel? Source { get; init; }
@@ -501,7 +515,7 @@ internal static class DamageModel
                 CardEffect discarded = next.Hand[pick];
                 next.Hand.RemoveAt(pick);
                 next.DiscardedThisTurn++;
-                ApplyDiscardTrigger(next, discarded);
+                ApplyDiscardTrigger(next, discarded, Shiv);
             }
 
             // 抽牌（子弹时间后本回合不能再抽）
@@ -519,19 +533,36 @@ internal static class DamageModel
             }
 
             Dfs(next, depth + 1);
-        }        /// <summary>弃牌优先级：先弃能触发的（战术大师/本能反应），再弃期望伤害最低的。</summary>
+        }        /// <summary>
+        /// 弃牌优先级：先弃「奇巧(Sly)」牌——它们被弃时会自动打出（免费生效），挑价值最高的那张；
+        /// 手上没有奇巧牌时，弃期望价值最低的那张。
+        /// </summary>
         private static int ChooseDiscard(List<CardEffect> hand)
         {
+            int bestSly = -1;
+            decimal bestSlyScore = -1m;
             for (int i = 0; i < hand.Count; i++)
             {
-                if (SilentLogic.TriggersOnDiscard(hand[i].Source?.GetType().Name ?? ""))
-                    return i;
+                if (!hand[i].IsSly)
+                    continue;
+                CardEffect c = hand[i];
+                decimal score = c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
+                                + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
+                if (score > bestSlyScore)
+                {
+                    bestSlyScore = score;
+                    bestSly = i;
+                }
             }
+            if (bestSly >= 0)
+                return bestSly;
+
             int worst = 0;
             decimal worstScore = decimal.MaxValue;
             for (int i = 0; i < hand.Count; i++)
             {
-                decimal score = hand[i].Damage + hand[i].Block + hand[i].Poison * 2 + hand[i].Shivs * 4;
+                CardEffect c = hand[i];
+                decimal score = c.Damage + c.Block + c.Poison * 2m + c.Shivs * 4m;
                 if (score < worstScore)
                 {
                     worstScore = score;
@@ -541,17 +572,55 @@ internal static class DamageModel
             return worst;
         }
 
-        /// <summary>被弃触发：战术大师给能量，本能反应抽牌。</summary>
-        private static void ApplyDiscardTrigger(SearchState state, CardEffect discarded)
+        /// <summary>
+        /// 被弃触发：奇巧（Sly）牌会**自动打出**（不花能量）。
+        /// 战术大师给能量、本能反应抽牌都属于这一类，这里统一按"自动打出"处理。
+        /// </summary>
+        private static void ApplyDiscardTrigger(SearchState state, CardEffect discarded, CardEffect shivTemplate)
         {
-            string cls = discarded.Source?.GetType().Name ?? "";
-            if (cls == "Tactician")
-                state.Energy += discarded.EnergyGain > 0 ? discarded.EnergyGain : 1;
-            else if (cls == "Reflex")
+            if (!discarded.IsSly)
+                return;
+
+            // 自动打出：目标取当前血量最低的敌人（近似"优先补刀"）
+            SimEnemy? target = state.Enemies.Where(e => e.Alive).OrderBy(e => e.Hp).FirstOrDefault();
+
+            if (discarded.Damage > 0)
             {
-                int draw = discarded.Draw > 0 ? discarded.Draw : 2;
-                if (!state.NoDraw)
-                    HandleDraws(state, draw);
+                if (discarded.HitsAll)
+                {
+                    foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
+                        ApplyDamage(state, enemy, discarded.Damage * (enemy.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                }
+                else if (target is not null)
+                {
+                    ApplyDamage(state, target, discarded.Damage * (target.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                }
+            }
+
+            if (discarded.Block > 0)
+                state.Block += discarded.Block + state.Dex;
+
+            if (target is not null)
+            {
+                if (discarded.Poison > 0)
+                    target.Poison += discarded.Poison;
+                if (discarded.Weak > 0)
+                    target.Weak += discarded.Weak;
+                if (discarded.Vulnerable > 0)
+                {
+                    target.Vulnerable += discarded.Vulnerable;
+                    target.VulnerableThisTurn += discarded.Vulnerable;
+                }
+            }
+
+            state.Energy += discarded.EnergyGain;
+            state.Dex += discarded.Dexterity;
+            if (discarded.Draw > 0 && !state.NoDraw)
+                HandleDraws(state, discarded.Draw);
+            if (discarded.Shivs > 0)
+            {
+                for (int s = 0; s < discarded.Shivs; s++)
+                    state.Hand.Add(shivTemplate);
             }
         }
 
@@ -697,11 +766,83 @@ internal static class DamageModel
         bool supported = true;
         string note = "";
 
+        bool isSly = false;
+
+
+        bool unplayable = false;
+
+
+        string keywordsText = "";
+
+
+        try
+
+
+        {
+
+
+            isSly = card.IsSlyThisTurn;
+
+
+            unplayable = card.Keywords.Contains(CardKeyword.Unplayable);
+
+
+
+            var kw = new List<string>();
+
+
+            if (card.Keywords.Contains(CardKeyword.Sly)) kw.Add("奇巧");
+
+
+            if (card.Keywords.Contains(CardKeyword.Exhaust)) kw.Add("消耗");
+
+
+            if (card.Keywords.Contains(CardKeyword.Innate)) kw.Add("固有");
+
+
+            if (card.Keywords.Contains(CardKeyword.Retain)) kw.Add("保留");
+
+
+            if (card.Keywords.Contains(CardKeyword.Ethereal)) kw.Add("虚无");
+
+
+            if (unplayable) kw.Add("不可打出");
+
+
+            keywordsText = kw.Count == 0 ? "" : string.Join("/", kw);
+
+
+        }
+
+
+        catch
+
+
+        {
+
+
+            // 读不到就按可打出处理
+
+
+        }
+
+
+
         string unsupported = SilentLogic.UnsupportedReason(className);
         if (unsupported.Length > 0)
         {
-            supported = false;
-            note = unsupported;
+                supported = false;
+                note = unsupported;
+        }
+
+        else if (unplayable)
+
+        {
+
+                supported = false;
+
+                note = "不可打出（Unplayable）";
+
         }
         else if (card.EnergyCost is { CostsX: true } && !SilentLogic.IsXCost(className))
         {
@@ -873,6 +1014,13 @@ internal static class DamageModel
             DamagePerDiscard = damagePerDiscard,
 
             TriggersPoisonNow = triggersPoisonNow,
+
+
+            IsSly = isSly,
+
+
+
+            KeywordsText = keywordsText,
             Supported = supported,
             Note = note,
             Source = card,
@@ -1193,6 +1341,9 @@ internal static class DamageModel
         }
     }
 }
+
+
+
 
 
 
