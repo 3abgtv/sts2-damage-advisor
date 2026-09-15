@@ -291,6 +291,11 @@ public partial class AdvisorRoot : CanvasLayer
             {
                 Entry.Log("注入失败：不在战斗中");
                 return;
+            }            // 联机时禁止注入：会在本地真实改变战斗状态，可能造成不同步
+            if (state.Players.Count > 1)
+            {
+                Entry.Log($"注入被拒绝：当前是联机（{state.Players.Count} 人），注入测试牌可能造成不同步");
+                return;
             }
 
             Player? me = LocalContext.GetMe(state);
@@ -560,6 +565,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 
