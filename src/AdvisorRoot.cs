@@ -463,7 +463,7 @@ public partial class AdvisorRoot : CanvasLayer
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
             foreach (SimEnemy se in advice.EnemiesBefore)
                 Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}" + $" | 按我算={DamageModel.IncomingOf(enemies.FirstOrDefault(c => c.Name == se.Name)!, myCreature).Total} 按全队算={DamageModel.IncomingOfAllies(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies).Total} | buff[{DamageModel.DescribePowers(enemies.FirstOrDefault(c => c.Name == se.Name)!)}]");
-            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal}");
+            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
         }
 
         if (_header is not null)
@@ -584,6 +584,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 

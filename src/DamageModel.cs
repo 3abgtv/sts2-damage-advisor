@@ -857,8 +857,10 @@ internal static class DamageModel
                 if (candidate.Kills != current.Kills)
                     return candidate.Kills > current.Kills;
                 if (candidate.Damage != current.Damage)
-                    return candidate.Damage > current.Damage;
-                return candidate.HpLoss < current.HpLoss;
+                        return candidate.Damage > current.Damage;
+                if (candidate.HpLoss != current.HpLoss)
+                    return candidate.HpLoss < current.HpLoss;
+                return candidate.EnergySpent < current.EnergySpent;
             }
 
             int budget = AdvisorSettings.HpLossBudget;
@@ -872,9 +874,17 @@ internal static class DamageModel
                 return candidate.HpLoss < current.HpLoss;
 
             if (candidate.Kills != current.Kills)
-                return candidate.Kills > current.Kills;
+                    return candidate.Kills > current.Kills;
 
-            return candidate.Damage > current.Damage;
+            if (candidate.Damage != current.Damage)
+                return candidate.Damage > current.Damage;
+
+
+
+            // 完全平局时别浪费资源：少花能量优先（避免为了"没收益的能力牌"白扔能量）
+
+
+            return candidate.EnergySpent < current.EnergySpent;
         }
     }
 
@@ -1477,6 +1487,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 
