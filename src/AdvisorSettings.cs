@@ -13,6 +13,8 @@ internal static class AdvisorSettings
 
     private static readonly int[] BudgetCycle = { 0, 1, 2, 3, 5 };
 
+    public static string ConfigPathPublic => ConfigPath;
+
     private static string ConfigPath
     {
         get
@@ -88,3 +90,4 @@ internal static class AdvisorSettings
         Save();
     }
 }
+

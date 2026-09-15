@@ -40,6 +40,10 @@ public partial class AdvisorRoot : CanvasLayer
     private bool _dragging;
     private bool _previousMouseDown;
     private Vector2 _lastMouse;
+
+    private double _settingsTimer;
+
+    private DateTime _lastCfgWrite;
     private int _injectIndex;
 
     /// <summary>F9 依次注入的测试牌（用来验证猎人牌效，不用等抽牌）。</summary>
@@ -101,6 +105,8 @@ public partial class AdvisorRoot : CanvasLayer
         TickBudget();
         TickCollapse();
         TickDrag();
+
+        TickSettingsFile();
 
         _timer += delta;
         if (_timer < 0.25)
@@ -167,6 +173,33 @@ public partial class AdvisorRoot : CanvasLayer
     }
 
     /// <summary>F7：循环"允许掉血上限"（0/1/2/3/5）。</summary>
+    /// <summary>每 5 秒检查一次 cfg 是否被外部修改（F7/F10 之外的改法也能生效）。</summary>
+    private void TickSettingsFile()
+    {
+        _settingsTimer += 0.25;
+        if (_settingsTimer < 5)
+            return;
+        _settingsTimer = 0;
+
+        try
+        {
+            string path = AdvisorSettings.ConfigPathPublic;
+            if (!System.IO.File.Exists(path))
+                return;
+            DateTime written = System.IO.File.GetLastWriteTimeUtc(path);
+            if (written == _lastCfgWrite)
+                return;
+            _lastCfgWrite = written;
+            AdvisorSettings.Load();
+            ApplyCollapse();
+            Entry.Log($"配置已重新加载：掉血上限={AdvisorSettings.HpLossBudget} 折叠={AdvisorSettings.Collapsed}");
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
     private void TickBudget()
     {
         bool pressed = Input.IsKeyPressed(Key.F7);
@@ -527,6 +560,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 

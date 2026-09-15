@@ -4,12 +4,13 @@
   "name": "伤害顾问",
   "author": "3abgtv",
   "description": "只读的本回合战斗顾问：给怪物编号，在「保命优先」的前提下推荐伤害最高的出牌顺序，并提示斩杀。不自动出牌，单人与联机均可使用。",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": false,
   "min_game_version": "0.111.0",
   "dependencies": []
 }
+
 
 

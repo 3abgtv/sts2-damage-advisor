@@ -63,6 +63,10 @@ internal sealed class SimEnemy
     public required string Name { get; init; }
     public required int Hp { get; set; }
     public required int MaxHp { get; init; }
+
+    /// <summary>敌人当前格挡（先扣格挡再扣血）。</summary>
+
+    public int Block { get; set; }
     /// <summary>意图原始总伤害。</summary>
     public required int BaseIncoming { get; init; }
     /// <summary>意图攻击段数（用于力量削减）。</summary>
@@ -94,6 +98,9 @@ internal sealed class SimEnemy
         Name = Name,
         Hp = Hp,
         MaxHp = MaxHp,
+
+        Block = Block,
+
         BaseIncoming = BaseIncoming,
         Hits = Hits,
         Weak = Weak,
@@ -169,6 +176,8 @@ internal static class DamageModel
                 Name = c.Name,
                 Hp = c.CurrentHp,
                 MaxHp = c.MaxHp,
+
+                Block = c.Block,
                 BaseIncoming = total,
                 Hits = hits,
             });
@@ -290,7 +299,10 @@ internal static class DamageModel
                 for (int k = 0; k < i; k++)
                 {
                     CardEffect other = state.Hand[k];
-                    if (other.Id == card.Id && other.Cost == card.Cost && other.Damage == card.Damage)
+                    if (other.Id == card.Id && other.Cost == card.Cost && other.Damage == card.Damage
+                        && other.Block == card.Block && other.Poison == card.Poison
+                        && other.Shivs == card.Shivs && other.Vulnerable == card.Vulnerable
+                        && other.Weak == card.Weak)
                     {
                         duplicate = true;
                         break;
@@ -491,8 +503,8 @@ internal static class DamageModel
             else if (cls == "Reflex")
             {
                 int draw = discarded.Draw > 0 ? discarded.Draw : 2;
-                for (int d = 0; d < draw && state.Draw.Count > 0; d++)
-                    state.Hand.Add(state.Draw.Dequeue());
+                if (!state.NoDraw)
+                    HandleDraws(state, draw);
             }
         }
 
@@ -526,7 +538,21 @@ internal static class DamageModel
 
         private static void ApplyDamage(SearchState state, SimEnemy target, decimal amount)
         {
-            int dealt = Math.Min(target.Hp, (int)amount);
+            int remaining = (int)amount;
+            if (remaining <= 0)
+                return;
+
+            // 先扣敌人格挡，只有未被格挡的部分才算伤害（也才触发涂毒）
+            if (target.Block > 0)
+            {
+                int absorbed = Math.Min(target.Block, remaining);
+                target.Block -= absorbed;
+                remaining -= absorbed;
+            }
+            if (remaining <= 0)
+                return;
+
+            int dealt = Math.Min(target.Hp, remaining);
             if (dealt <= 0)
                 return;
             target.Hp -= dealt;
@@ -802,8 +828,8 @@ internal static class DamageModel
         try
         {
             Shiv canonical = ModelDb.Card<Shiv>();
-            if (canonical.DynamicVars.TryGetValue("Damage", out DynamicVar variable))
-                baseDamage = variable.BaseValue;
+            if (canonical.DynamicVars.TryGetValue("Damage", out DynamicVar? shivVar) && shivVar is not null)
+                baseDamage = shivVar.BaseValue;
         }
         catch
         {
@@ -841,7 +867,7 @@ internal static class DamageModel
     {
         try
         {
-            if (!card.DynamicVars.TryGetValue("Damage", out DynamicVar variable))
+            if (!card.DynamicVars.TryGetValue("Damage", out DynamicVar? variable) || variable is null)
                 return 0m;
 
             // 用游戏自己维护的卡面预览值：它已经算进了力量、虚弱、易伤等修正
@@ -902,7 +928,7 @@ internal static class DamageModel
     {
         try
         {
-            return card.DynamicVars.TryGetValue(key, out DynamicVar variable) ? variable.IntValue : 0;
+            return card.DynamicVars.TryGetValue(key, out DynamicVar? variable) && variable is not null ? variable.IntValue : 0;
         }
         catch
         {
@@ -1005,6 +1031,9 @@ internal static class DamageModel
         }
     }
 }
+
+
+
 
 
 
