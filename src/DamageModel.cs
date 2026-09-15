@@ -860,11 +860,15 @@ internal static class DamageModel
 
     private static int CountSkillsInHand(AnalyzeContext? context) => Math.Max(1, context?.HandSize ?? 1);
 
-    /// <summary>单只怪打到我身上的意图伤害（联机时按"我"作为目标，而不是全体友方）。</summary>
+    /// <summary>
+    /// 单只怪本回合打到"我"身上的意图伤害。
+    /// 联机模式下敌人攻击对全队造成相同伤害，所以按自己作为目标计算即为准确值；
+    /// 真正需要区分的是"我自己的格挡/血量"，那是玩家个人数据。
+    /// </summary>
     public static (int Total, int Hits) IncomingOf(Creature enemy, Creature me)
         => IncomingInternal(enemy, new[] { me });
 
-    /// <summary>诊断用：按全体友方计算（对比联机时的差异）。</summary>
+    /// <summary>诊断用：按全体友方计算，用于对比两者在联机下的差异。</summary>
     public static (int Total, int Hits) IncomingOfAllies(Creature enemy, IReadOnlyList<Creature> allies)
         => IncomingInternal(enemy, allies);
 
@@ -1104,6 +1108,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 
