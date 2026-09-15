@@ -51,6 +51,14 @@ internal sealed class CardEffect
     public bool DoubleBlock { get; init; }
     /// <summary>幻影之刃：本回合第一张小刀额外伤害。</summary>
     public int FirstShivBonus { get; init; }
+
+    /// <summary>铭记死亡：本回合每弃一张牌额外增加的伤害。</summary>
+
+    public int DamagePerDiscard { get; init; }
+
+    /// <summary>毒性爆发：打出后立即触发一次中毒伤害。</summary>
+
+    public bool TriggersPoisonNow { get; init; }
     public bool Supported { get; init; } = true;
     public string Note { get; init; } = "";
     public CardModel? Source { get; init; }
@@ -370,6 +378,10 @@ internal static class DamageModel
 
             // 这张牌造成的伤害（X 费按已投入能量放大；小刀补上本回合的精准加成）
             decimal damage = played.IsXCost ? played.Damage * effectiveCost : played.Damage;
+
+            if (played.DamagePerDiscard > 0 && next.DiscardedThisTurn > 0)
+
+                damage += played.DamagePerDiscard * next.DiscardedThisTurn;
             if (played.Id.Contains("SHIV", StringComparison.OrdinalIgnoreCase))
             {
                 damage += next.ShivBonus;
@@ -406,8 +418,12 @@ internal static class DamageModel
             }
 
             // 中毒 / 虚弱 / 易伤
-            SimEnemy? debuffTarget = next.Enemies.FirstOrDefault(e => e.Index == targetIndex);
-            if (debuffTarget is not null)
+            // 全体目标（AllEnemies）作用于所有存活敌人；单体目标按编号选
+            IReadOnlyList<SimEnemy> debuffTargets = played.HitsAll
+                ? next.Enemies.Where(e => e.Alive).ToList()
+                : next.Enemies.Where(e => e.Index == targetIndex).ToList();
+
+            foreach (SimEnemy debuffTarget in debuffTargets)
             {
                 if (played.Poison > 0)
                     debuffTarget.Poison += played.Poison;
@@ -422,6 +438,16 @@ internal static class DamageModel
                 }
                 if (played.IsXCost && played.StrengthLossPerX > 0)
                     debuffTarget.StrengthLoss += played.StrengthLossPerX * effectiveCost;
+            }
+
+            // 毒性爆发：给完中毒后立即触发一次（中毒伤害无视格挡）
+            if (played.TriggersPoisonNow)
+            {
+                foreach (SimEnemy victim in next.Enemies.Where(e => e.Alive).ToList())
+                {
+                    if (victim.Poison > 0)
+                        ApplyDamageIgnoringBlock(next, victim, victim.Poison);
+                }
             }
 
             if (played.StrengthLoss > 0 && played.HitsAll)
@@ -536,6 +562,16 @@ internal static class DamageModel
                 target.Poison += state.Envenom;
         }
 
+        /// <summary>中毒伤害：无视格挡。</summary>
+        private static void ApplyDamageIgnoringBlock(SearchState state, SimEnemy target, decimal amount)
+        {
+            int dealt = Math.Min(target.Hp, (int)amount);
+            if (dealt <= 0)
+                return;
+            target.Hp -= dealt;
+            state.Damage += dealt;
+        }
+
         private static void ApplyDamage(SearchState state, SimEnemy target, decimal amount)
         {
             int remaining = (int)amount;
@@ -644,6 +680,8 @@ internal static class DamageModel
         decimal damage = 0m;
         bool hitsAll = card.TargetType == TargetType.AllEnemies;
         int hits = 1;
+
+        int repeats = HitCount(card);
         if (card.Type == CardType.Attack || SilentLogic.ScalesWithAttacksPlayed(className) || SilentLogic.ScalesWithSkillsInHand(className))
         {
             decimal perHit = target is null ? 0m : EstimateDamage(card, target);
@@ -667,6 +705,12 @@ internal static class DamageModel
 
         // 卡面效果
         int poison = ReadByType(card, v => v is PowerVar<PoisonPower>) ?? ReadInt(card, "PoisonPower");
+
+        // 弹跳药瓶这类"随机给予 N 层中毒 Repeat 次"：总量 = N × 次数
+
+        if (damage == 0m && poison > 0 && repeats > 1)
+
+            poison *= repeats;
         int weak = ReadByType(card, v => v is PowerVar<WeakPower>) ?? ReadInt(card, "WeakPower");
         int vulnerable = ReadByType(card, v => v is PowerVar<VulnerablePower>) ?? ReadInt(card, "VulnerablePower");
         int strengthLoss = ReadInt(card, "StrengthLoss");
@@ -744,6 +788,10 @@ internal static class DamageModel
         int damagePerDraw = SilentLogic.GrantsDamagePerDraw(className) ? ReadInt(card, "SpeedsterPower") : 0;
         bool doubleBlock = SilentLogic.DoublesBlock(className);
         int firstShivBonus = SilentLogic.GrantsFirstShivBonus(className) ? ReadInt(card, "PhantomBladesPower") : 0;
+
+        int damagePerDiscard = className == "MementoMori" ? ReadInt(card, "ExtraDamage") : 0;
+
+        bool triggersPoisonNow = className == "Outbreak";
         if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
             vulnerable = ReadInt(card, "Power");
         string powerNote = SilentLogic.ImmediatePowerNote(className);
@@ -786,6 +834,10 @@ internal static class DamageModel
             DamagePerDraw = damagePerDraw,
             DoubleBlock = doubleBlock,
             FirstShivBonus = firstShivBonus,
+
+            DamagePerDiscard = damagePerDiscard,
+
+            TriggersPoisonNow = triggersPoisonNow,
             Supported = supported,
             Note = note,
             Source = card,
@@ -1031,6 +1083,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 
