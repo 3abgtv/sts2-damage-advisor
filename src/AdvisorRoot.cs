@@ -37,6 +37,8 @@ public partial class AdvisorRoot : CanvasLayer
     private bool _previousInjectKey;
     private bool _previousBudgetKey;
     private bool _previousCollapseKey;
+
+    private bool _previousPriorityKey;
     private bool _dragging;
     private bool _previousMouseDown;
     private Vector2 _lastMouse;
@@ -104,6 +106,8 @@ public partial class AdvisorRoot : CanvasLayer
         TickInject();
         TickBudget();
         TickCollapse();
+
+        TickPriority();
         TickDrag();
 
         TickSettingsFile();
@@ -156,7 +160,7 @@ public partial class AdvisorRoot : CanvasLayer
         _handLines = MakeLabel("-", 12, new Color(0.9f, 0.9f, 0.95f));
         _planLines = MakeLabel("-", 14, new Color(0.65f, 1f, 0.7f));
         _killLine = MakeLabel("-", 13, new Color(1f, 0.85f, 0.4f));        _footer = MakeLabel("-", 11, new Color(0.65f, 0.65f, 0.72f));
-        _hintLine = MakeLabel("F7 掉血上限 · F8 隐藏 · F9 注入测试牌 · F10 折叠 · 拖动面板移动", 11, new Color(0.55f, 0.75f, 0.95f));
+        _hintLine = MakeLabel("F6 模式 · F7 掉血上限 · F8 隐藏 · F9 注入 · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
 
         foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _killLine, _footer, _hintLine })
             box.AddChild(label);        AddChild(_panel);
@@ -213,6 +217,19 @@ public partial class AdvisorRoot : CanvasLayer
     }
 
     /// <summary>F10：折叠/展开（折叠后只留推荐与斩杀两行）。</summary>
+    /// <summary>F6：优先保命 &lt;-&gt; 优先打伤害。</summary>
+    private void TickPriority()
+    {
+        bool pressed = Input.IsKeyPressed(Key.F6);
+        if (pressed && !_previousPriorityKey)
+        {
+            AdvisorSettings.TogglePriority();
+            ApplyCollapse();
+            Entry.Log("优先级模式 = " + (AdvisorSettings.DamageFirst ? "damage" : "survival"));
+        }
+        _previousPriorityKey = pressed;
+    }
+
     private void TickCollapse()
     {
         bool pressed = Input.IsKeyPressed(Key.F10);
@@ -235,7 +252,7 @@ public partial class AdvisorRoot : CanvasLayer
         if (_hintLine is not null)
         {
             _hintLine.Visible = true;
-            _hintLine.Text = $"F7 掉血上限(当前 {AdvisorSettings.HpLossBudget}) · F8 隐藏 · F9 注入测试牌 · F10 折叠 · 拖动面板移动";
+            _hintLine.Text = $"F6 {(AdvisorSettings.DamageFirst ? "输出" : "保命")} · F7 掉血上限({AdvisorSettings.HpLossBudget}) · F8 隐藏 · F9 注入 · F10 折叠 · 拖动移动";
         }
     }
 
@@ -445,12 +462,12 @@ public partial class AdvisorRoot : CanvasLayer
             foreach (CardEffect e in advice.HandEffects)
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
             foreach (SimEnemy se in advice.EnemiesBefore)
-                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}");
+                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}" + $" | 按我算={DamageModel.IncomingOf(enemies.FirstOrDefault(c => c.Name == se.Name)!, myCreature).Total} 按全队算={DamageModel.IncomingOfAllies(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies).Total}");
             Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal}");
         }
 
         if (_header is not null)
-            _header.Text = $"伤害顾问 v0.6  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  允许掉血 ≤{AdvisorSettings.HpLossBudget}";
+            _header.Text = $"伤害顾问 v0.8  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  {(AdvisorSettings.DamageFirst ? "输出优先" : "保命优先")}  ·  掉血 ≤{AdvisorSettings.HpLossBudget}";
 
         if (_status is not null)
         {
@@ -565,6 +582,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 

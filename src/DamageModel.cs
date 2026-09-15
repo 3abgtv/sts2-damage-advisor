@@ -177,7 +177,7 @@ internal static class DamageModel
             Creature c = enemiesInOrder[i];
             if (!c.IsAlive)
                 continue;
-            (int total, int hits) = IncomingOf(c, allies);
+            (int total, int hits) = IncomingOf(c, me);
             enemies.Add(new SimEnemy
             {
                 Index = i + 1,
@@ -631,10 +631,24 @@ internal static class DamageModel
         /// 打分顺序：不死 → 掉血 ≤ 预算（超出预算就先比谁掉血少）→ 优先击杀 → 最大伤害。
         /// 「优先击杀」是跨回合考量：打死一只怪等于省掉它下一轮的攻击。
         /// </summary>
+        /// <summary>
+        /// 两种优先级模式（F6 切换）：
+        ///   保命优先：不死 → 掉血 ≤ 预算（超预算则少掉血优先）→ 优先击杀 → 最大伤害
+        ///   输出优先：不死 → 优先击杀 → 最大伤害 → 掉血最少
+        /// </summary>
         private static bool IsBetter(TurnPlan candidate, TurnPlan current)
         {
             if (candidate.Lethal != current.Lethal)
                 return !candidate.Lethal;
+
+            if (AdvisorSettings.DamageFirst)
+            {
+                if (candidate.Kills != current.Kills)
+                    return candidate.Kills > current.Kills;
+                if (candidate.Damage != current.Damage)
+                    return candidate.Damage > current.Damage;
+                return candidate.HpLoss < current.HpLoss;
+            }
 
             int budget = AdvisorSettings.HpLossBudget;
             bool candidateInBudget = candidate.HpLoss <= budget;
@@ -846,8 +860,15 @@ internal static class DamageModel
 
     private static int CountSkillsInHand(AnalyzeContext? context) => Math.Max(1, context?.HandSize ?? 1);
 
-    /// <summary>单只怪本回合的意图（总伤害 + 段数）。</summary>
-    public static (int Total, int Hits) IncomingOf(Creature enemy, IReadOnlyList<Creature> allies)
+    /// <summary>单只怪打到我身上的意图伤害（联机时按"我"作为目标，而不是全体友方）。</summary>
+    public static (int Total, int Hits) IncomingOf(Creature enemy, Creature me)
+        => IncomingInternal(enemy, new[] { me });
+
+    /// <summary>诊断用：按全体友方计算（对比联机时的差异）。</summary>
+    public static (int Total, int Hits) IncomingOfAllies(Creature enemy, IReadOnlyList<Creature> allies)
+        => IncomingInternal(enemy, allies);
+
+    private static (int Total, int Hits) IncomingInternal(Creature enemy, IEnumerable<Creature> targets)
     {
         int total = 0;
         int hits = 0;
@@ -859,7 +880,7 @@ internal static class DamageModel
             {
                 if (intent is AttackIntent attack)
                 {
-                    int single = Math.Max(0, attack.GetSingleDamage(allies, enemy));
+                    int single = Math.Max(0, attack.GetSingleDamage(targets, enemy));
                     int repeats = Math.Max(1, attack.Repeats);
                     total += single * repeats;
                     hits += repeats;
@@ -1083,6 +1104,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 
