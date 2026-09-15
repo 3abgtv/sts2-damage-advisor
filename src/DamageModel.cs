@@ -75,6 +75,12 @@ internal sealed class SimEnemy
     /// <summary>敌人当前格挡（先扣格挡再扣血）。</summary>
 
     public int Block { get; set; }
+
+
+    /// <summary>身上关键 debuff 的显示文本（含队友施加的）。</summary>
+
+
+    public string PowersText { get; set; } = "";
     /// <summary>意图原始总伤害。</summary>
     public required int BaseIncoming { get; init; }
     /// <summary>意图攻击段数（用于力量削减）。</summary>
@@ -115,6 +121,8 @@ internal sealed class SimEnemy
         Vulnerable = Vulnerable,
         StrengthLoss = StrengthLoss,
         Poison = Poison,
+
+        PowersText = PowersText,
         VulnerableThisTurn = VulnerableThisTurn,
     };
 }
@@ -130,6 +138,8 @@ internal sealed class TurnPlan
     public List<PlannedAction> Actions { get; init; } = new();
     public decimal Damage { get; set; }
     public int Block { get; set; }
+
+
     public int EnergySpent { get; set; }
     public int EnergyGained { get; set; }
     public int HpLoss { get; set; }
@@ -187,7 +197,16 @@ internal static class DamageModel
 
                 Block = c.Block,
                 BaseIncoming = total,
+
                 Hits = hits,
+
+                // 中毒从活体状态起算：队友/上回合留下的毒也会在敌方行动前结算
+
+
+                Poison = ReadPower<PoisonPower>(c),
+
+
+                PowersText = DescribePowers(c),
             });
         }
 
@@ -272,6 +291,8 @@ internal static class DamageModel
         public List<PlannedAction> Actions { get; init; } = new();
         public decimal Damage { get; set; }
         public int Block { get; set; }
+
+
         public int EnergySpent { get; set; }
         public int EnergyGained { get; set; }
     }
@@ -1085,6 +1106,70 @@ internal static class DamageModel
         }
     }
 
+    /// <summary>诊断用：敌人身上的关键 debuff（中毒/易伤/虚弱/力量），含队友施加的。</summary>
+
+
+    public static string DescribePowers(Creature enemy)
+
+
+    {
+
+
+        try
+
+
+        {
+
+
+            var parts = new List<string>();
+
+
+            int poison = ReadPower<PoisonPower>(enemy);
+
+
+            int vulnerable = ReadPower<VulnerablePower>(enemy);
+
+
+            int weak = ReadPower<WeakPower>(enemy);
+
+
+            int strength = ReadPower<StrengthPower>(enemy);
+
+
+            if (poison != 0) parts.Add($"中毒={poison}");
+
+
+            if (vulnerable != 0) parts.Add($"易伤={vulnerable}");
+
+
+            if (weak != 0) parts.Add($"虚弱={weak}");
+
+
+            if (strength != 0) parts.Add($"力量={strength}");
+
+
+            return parts.Count == 0 ? "无" : string.Join(" ", parts);
+
+
+        }
+
+
+        catch (Exception ex)
+
+
+        {
+
+
+            return "buff 读取失败：" + ex.Message;
+
+
+        }
+
+
+    }
+
+
+
     public static string DescribeIntent(Creature enemy, IReadOnlyList<Creature> allies)
     {
         try
@@ -1108,6 +1193,9 @@ internal static class DamageModel
         }
     }
 }
+
+
+
 
 
 

@@ -462,7 +462,7 @@ public partial class AdvisorRoot : CanvasLayer
             foreach (CardEffect e in advice.HandEffects)
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
             foreach (SimEnemy se in advice.EnemiesBefore)
-                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}" + $" | 按我算={DamageModel.IncomingOf(enemies.FirstOrDefault(c => c.Name == se.Name)!, myCreature).Total} 按全队算={DamageModel.IncomingOfAllies(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies).Total}");
+                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}" + $" | 按我算={DamageModel.IncomingOf(enemies.FirstOrDefault(c => c.Name == se.Name)!, myCreature).Total} 按全队算={DamageModel.IncomingOfAllies(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies).Total} | buff[{DamageModel.DescribePowers(enemies.FirstOrDefault(c => c.Name == se.Name)!)}]");
             Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal}");
         }
 
@@ -477,7 +477,7 @@ public partial class AdvisorRoot : CanvasLayer
 
         if (_enemyLine is not null)
         {
-            var enemyLines = advice.EnemiesBefore.Select(e => $"{e.Index}.{e.Name} {e.Hp}/{e.MaxHp}(来袭{e.Incoming})");
+            var enemyLines = advice.EnemiesBefore.Select(e => $"{e.Index}.{e.Name} {e.Hp}/{e.MaxHp}(来袭{e.Incoming})" + (e.PowersText.Length > 0 && e.PowersText != "无" ? $" [{e.PowersText}]" : ""));
             _enemyLine.Text = "敌人：" + string.Join("  ", enemyLines) + $"\n合计来袭 {advice.IncomingDamage} 伤害（打死怪会减少）";
         }
 
@@ -582,6 +582,8 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
+
 
 
 
