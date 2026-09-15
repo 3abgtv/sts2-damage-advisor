@@ -685,6 +685,7 @@ internal static class DamageModel
             }
 
             state.Energy += discarded.EnergyGain;
+            state.EnergyGained += discarded.EnergyGain;
             state.Dex += discarded.Dexterity;
             if (discarded.Draw > 0 && !state.NoDraw)
                 HandleDraws(state, discarded.Draw);
@@ -1476,6 +1477,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 

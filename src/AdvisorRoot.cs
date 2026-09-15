@@ -515,10 +515,10 @@ public partial class AdvisorRoot : CanvasLayer
             else
             {
                 string order = string.Join(" → ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
-                int energyLeft = pcs.Energy - plan.EnergySpent;
+                int energyLeft = pcs.Energy + plan.EnergyGained - plan.EnergySpent;
                 string hurt = plan.HpLoss == 0 ? "预计无伤" : $"预计掉血 {plan.HpLoss}";
                 int weakApplied = plan.Actions.Sum(a => a.Card.Weak);
-                _planLines.Text = $"推荐：{order}\n伤害 {plan.Damage:0.#} · 格挡 +{plan.Block} · {hurt} · 剩 {energyLeft} 能量" + (weakApplied > 0 ? $" · 虚弱{weakApplied}" : "");
+                _planLines.Text = $"推荐：{order}\n伤害 {plan.Damage:0.#} · 格挡 +{plan.Block} · {hurt} · 剩 {energyLeft} 能量" + (plan.EnergyGained > 0 ? $"（耗 {plan.EnergySpent}·回 {plan.EnergyGained}）" : "") + (weakApplied > 0 ? $" · 虚弱{weakApplied}" : "");
             }
         }
 
@@ -584,6 +584,7 @@ public partial class AdvisorRoot : CanvasLayer
             _killLine.Text = "-";
     }
 }
+
 
 
 
