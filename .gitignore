@@ -1,0 +1,10 @@
+# 构建产物
+bin/
+obj/
+# 本地运行产物 / 调试
+shots/
+*.log
+*.log.old
+*.cfg
+# 游戏卡池转储（含游戏内文本，不随仓库分发）
+docs/silent-pool.txt

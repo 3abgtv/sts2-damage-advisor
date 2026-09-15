@@ -1,0 +1,1021 @@
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
+using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Powers;
+
+namespace DamageAdvisor;
+
+/// <summary>一张牌在本回合的可量化效果。</summary>
+internal sealed class CardEffect
+{
+    public required string Name { get; init; }
+    public string Id { get; init; } = "";
+    public required int Cost { get; init; }
+    public decimal Damage { get; init; }
+    public bool HitsAll { get; init; }
+    public int Hits { get; init; } = 1;
+    public int Block { get; init; }
+    public int Poison { get; init; }
+    public int Weak { get; init; }
+    public int Vulnerable { get; init; }
+    public int StrengthLoss { get; init; }
+    public int Draw { get; init; }
+    public int Shivs { get; init; }
+    public int EnergyGain { get; init; }
+    public int Dexterity { get; init; }
+    public int Discard { get; init; }
+    // ---- v0.6 新增：本回合可建模的猎人机制 ----
+    public bool IsXCost { get; init; }
+    public decimal DamagePerX { get; init; }
+    public int WeakPerX { get; init; }
+    public int StrengthLossPerX { get; init; }
+    public bool HandFree { get; init; }
+    public bool NoDraw { get; init; }
+    public bool DiscardHandForShivs { get; init; }
+    public bool DiscardHandForDraw { get; init; }
+    public int ShivBonus { get; init; }
+    public int BlockPerCard { get; init; }
+    /// <summary>涂毒：每点未被格挡的攻击伤害附加的中毒层数。</summary>
+    public int Envenom { get; init; }
+    /// <summary>腐蚀波：本回合每抽一张牌给全体敌人的中毒层数。</summary>
+    public int PoisonPerDraw { get; init; }
+    /// <summary>群蛇形态：每打出一张牌对随机敌人造成的伤害。</summary>
+    public int DamagePerCardPlayed { get; init; }
+    /// <summary>速行者：本回合每抽一张牌对全体敌人造成的伤害。</summary>
+    public int DamagePerDraw { get; init; }
+    /// <summary>融入暗影：本回合获得的格挡翻倍。</summary>
+    public bool DoubleBlock { get; init; }
+    /// <summary>幻影之刃：本回合第一张小刀额外伤害。</summary>
+    public int FirstShivBonus { get; init; }
+    public bool Supported { get; init; } = true;
+    public string Note { get; init; } = "";
+    public CardModel? Source { get; init; }
+}
+
+/// <summary>战斗中一只怪的简化状态（带屏幕编号）。</summary>
+internal sealed class SimEnemy
+{
+    public required int Index { get; init; }
+    public required string Name { get; init; }
+    public required int Hp { get; set; }
+    public required int MaxHp { get; init; }
+    /// <summary>意图原始总伤害。</summary>
+    public required int BaseIncoming { get; init; }
+    /// <summary>意图攻击段数（用于力量削减）。</summary>
+    public required int Hits { get; init; }
+    public int Weak { get; set; }
+    public int Vulnerable { get; set; }
+    public int StrengthLoss { get; set; }
+    public int Poison { get; set; }
+    /// <summary>本回合才被我们上的易伤（用于后续伤害 ×1.5）。</summary>
+    public int VulnerableThisTurn { get; set; }
+
+    public bool Alive => Hp > 0;
+    public bool DiesToPoison => Alive && Poison >= Hp;
+
+    public int Incoming
+    {
+        get
+        {
+            int damage = Math.Max(0, BaseIncoming - StrengthLoss * Math.Max(1, Hits));
+            if (Weak > 0)
+                damage = damage * 3 / 4;
+            return damage;
+        }
+    }
+
+    public SimEnemy Clone() => new()
+    {
+        Index = Index,
+        Name = Name,
+        Hp = Hp,
+        MaxHp = MaxHp,
+        BaseIncoming = BaseIncoming,
+        Hits = Hits,
+        Weak = Weak,
+        Vulnerable = Vulnerable,
+        StrengthLoss = StrengthLoss,
+        Poison = Poison,
+        VulnerableThisTurn = VulnerableThisTurn,
+    };
+}
+
+internal sealed class PlannedAction
+{
+    public required CardEffect Card { get; init; }
+    public required int TargetIndex { get; init; }
+}
+
+internal sealed class TurnPlan
+{
+    public List<PlannedAction> Actions { get; init; } = new();
+    public decimal Damage { get; set; }
+    public int Block { get; set; }
+    public int EnergySpent { get; set; }
+    public int EnergyGained { get; set; }
+    public int HpLoss { get; set; }
+    public bool Lethal { get; set; }
+
+    /// <summary>本回合能打死的怪数量（含中毒先手击杀）。</summary>
+
+    public int Kills { get; set; }
+    public List<SimEnemy> EnemiesAfter { get; set; } = new();
+}
+
+internal sealed class TurnAdvice
+{
+    public required TurnPlan Plan { get; init; }
+    public required IReadOnlyList<SimEnemy> EnemiesBefore { get; init; }
+    public required int IncomingDamage { get; init; }
+    public required int CurrentBlock { get; init; }
+    public required int CurrentHp { get; init; }
+    public required int NodesExplored { get; init; }
+    public required IReadOnlyList<CardEffect> HandEffects { get; init; }
+    public required bool ShivBlocked { get; init; }
+}
+
+/// <summary>
+/// v0.5 模型：猎人机制 + 本回合小状态机搜索。
+/// 目标：先保命（不死/少掉血），再在保命前提下打最大伤害。
+/// </summary>
+internal static class DamageModel
+{
+    private const int MaxNodes = 80000;
+
+    public static TurnAdvice Solve(
+        IReadOnlyList<CardModel> hand,
+        IReadOnlyList<CardModel> drawPile,
+        int energy,
+        IReadOnlyList<Creature> enemiesInOrder,
+        IReadOnlyList<Creature> allies,
+        Creature me,
+        int currentHp,
+        int currentBlock)
+    {
+        var enemies = new List<SimEnemy>();
+        for (int i = 0; i < enemiesInOrder.Count; i++)
+        {
+            Creature c = enemiesInOrder[i];
+            if (!c.IsAlive)
+                continue;
+            (int total, int hits) = IncomingOf(c, allies);
+            enemies.Add(new SimEnemy
+            {
+                Index = i + 1,
+                Name = c.Name,
+                Hp = c.CurrentHp,
+                MaxHp = c.MaxHp,
+                BaseIncoming = total,
+                Hits = hits,
+            });
+        }
+
+        Creature? sample = enemiesInOrder.FirstOrDefault(e => e.IsAlive);
+        int strength = ReadPower<StrengthPower>(me);
+        int accuracy = ReadPower<AccuracyPower>(me);
+        int attacksPlayed = 0; // 本回合已打出的攻击牌数由调用方传入更准，这里从 0 起
+
+        var analyzeContext = new AnalyzeContext
+        {
+            Target = sample,
+            Enemies = enemies,
+            HandSize = hand.Count,
+            AttacksPlayedThisTurn = attacksPlayed,
+            ShivDamage = BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0),
+            DrawPileCount = drawPile.Count,
+            ShivBlocked = false,
+        };
+
+        List<CardEffect> handEffects = hand.Select(c => Analyze(c, analyzeContext)).ToList();
+        List<CardEffect> drawEffects = drawPile.Select(c => Analyze(c, analyzeContext)).ToList();
+
+        var context = new SearchContext
+        {
+            Shiv = BuildShivEffect(sample, BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0)),
+            CurrentBlock = currentBlock,
+            CurrentHp = currentHp,
+            EnemiesBefore = enemies,
+        };
+
+        context.Dfs(new SearchState
+        {
+            Energy = energy,
+            Hand = new List<CardEffect>(handEffects),
+            Draw = new Queue<CardEffect>(drawEffects),
+            Enemies = enemies.Select(e => e.Clone()).ToList(),
+        }, 0);
+
+        return new TurnAdvice
+        {
+            Plan = context.Best,
+            EnemiesBefore = enemies,
+            IncomingDamage = enemies.Sum(e => e.Incoming),
+            CurrentBlock = currentBlock,
+            CurrentHp = currentHp,
+            NodesExplored = context.Nodes,
+            HandEffects = handEffects,
+            ShivBlocked = false,
+        };
+    }
+
+    private sealed class AnalyzeContext
+    {
+        public Creature? Target { get; init; }
+        public required IReadOnlyList<SimEnemy> Enemies { get; init; }
+        public required int HandSize { get; init; }
+        public required int AttacksPlayedThisTurn { get; init; }
+        public required decimal ShivDamage { get; init; }
+        public required int DrawPileCount { get; init; }
+        public required bool ShivBlocked { get; init; }
+    }
+
+    private sealed class SearchState
+    {
+        public int Energy { get; set; }
+        public int Dex { get; set; }
+        public int DiscardedThisTurn { get; set; }
+        public bool HandFree { get; set; }
+        public bool NoDraw { get; set; }
+        public int ShivBonus { get; set; }
+        public int BlockPerCard { get; set; }
+        public int Envenom { get; set; }
+        public int PoisonPerDraw { get; set; }
+        public int DamagePerCardPlayed { get; set; }
+        public int DamagePerDraw { get; set; }
+        public bool DoubleBlock { get; set; }
+        public int FirstShivBonus { get; set; }
+        public bool FirstShivBonusUsed { get; set; }
+        public List<CardEffect> Hand { get; init; } = new();
+        public Queue<CardEffect> Draw { get; init; } = new();
+        public List<SimEnemy> Enemies { get; init; } = new();
+        public List<PlannedAction> Actions { get; init; } = new();
+        public decimal Damage { get; set; }
+        public int Block { get; set; }
+        public int EnergySpent { get; set; }
+        public int EnergyGained { get; set; }
+    }
+
+    private sealed class SearchContext
+    {
+        public required CardEffect Shiv { get; init; }
+        public required int CurrentBlock { get; init; }
+        public required int CurrentHp { get; init; }
+        public required List<SimEnemy> EnemiesBefore { get; init; }
+
+        public TurnPlan Best { get; private set; } = new();
+        public int Nodes { get; private set; }
+        private bool _hasBest;
+
+        public void Dfs(SearchState state, int depth)
+        {
+            Nodes++;
+            Consider(state);
+
+            if (Nodes > MaxNodes || depth > 14)
+                return;
+
+            for (int i = 0; i < state.Hand.Count; i++)
+            {
+                CardEffect card = state.Hand[i];
+                if (!card.Supported)
+                    continue;
+
+                // 同名牌只尝试一次：同样的小刀/打击互相替换不会产生更优解，
+                // 但会带来 N! 级别的重复分支（5 张小刀 = 120 条等价路径）
+                bool duplicate = false;
+                for (int k = 0; k < i; k++)
+                {
+                    CardEffect other = state.Hand[k];
+                    if (other.Id == card.Id && other.Cost == card.Cost && other.Damage == card.Damage)
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate)
+                    continue;
+
+                int effectiveCost = card.IsXCost
+                    ? state.Energy
+                    : (state.HandFree ? 0 : card.Cost);
+                if (effectiveCost > state.Energy)
+                    continue;
+
+                bool needsTarget = !card.HitsAll && (
+                    card.Damage > 0 || card.Poison > 0 || card.Weak > 0 || card.Vulnerable > 0
+                    || card.StrengthLoss > 0
+                    || (card.IsXCost && (card.WeakPerX > 0 || card.StrengthLossPerX > 0)));
+
+                if (needsTarget)
+                {
+                    foreach (SimEnemy target in state.Enemies.Where(e => e.Alive).ToList())
+                        PlayCard(state, i, card, target.Index, depth, effectiveCost);
+                }
+                else
+                {
+                    PlayCard(state, i, card, 0, depth, effectiveCost);
+                }
+            }
+        }
+
+        private void PlayCard(SearchState state, int handIndex, CardEffect card, int targetIndex, int depth, int effectiveCost)
+        {
+            var next = new SearchState
+            {
+                Energy = state.Energy - effectiveCost + card.EnergyGain,
+                Dex = state.Dex + card.Dexterity,
+                DiscardedThisTurn = state.DiscardedThisTurn,
+                HandFree = state.HandFree || card.HandFree,
+                NoDraw = state.NoDraw || card.NoDraw,
+                ShivBonus = state.ShivBonus + card.ShivBonus,
+                BlockPerCard = state.BlockPerCard + card.BlockPerCard,
+                Envenom = state.Envenom + card.Envenom,
+                PoisonPerDraw = state.PoisonPerDraw + card.PoisonPerDraw,
+                DamagePerCardPlayed = state.DamagePerCardPlayed + card.DamagePerCardPlayed,
+                DamagePerDraw = state.DamagePerDraw + card.DamagePerDraw,
+                DoubleBlock = state.DoubleBlock || card.DoubleBlock,
+                FirstShivBonus = state.FirstShivBonus + card.FirstShivBonus,
+                FirstShivBonusUsed = state.FirstShivBonusUsed,
+                Hand = new List<CardEffect>(state.Hand),
+                Draw = new Queue<CardEffect>(state.Draw),
+                Enemies = state.Enemies.Select(e => e.Clone()).ToList(),
+                Actions = new List<PlannedAction>(state.Actions),
+                Damage = state.Damage,
+                Block = state.Block
+                        + (card.Block + (card.Block > 0 ? state.Dex : 0)) * (state.DoubleBlock || card.DoubleBlock ? 2 : 1)
+                        + (card.Block > 0 ? 0 : state.BlockPerCard),
+                EnergySpent = state.EnergySpent + effectiveCost,
+                EnergyGained = state.EnergyGained + card.EnergyGain,
+            };
+
+            CardEffect played = next.Hand[handIndex];
+            next.Hand.RemoveAt(handIndex);
+            next.Actions.Add(new PlannedAction { Card = played, TargetIndex = targetIndex });
+
+            // 这张牌造成的伤害（X 费按已投入能量放大；小刀补上本回合的精准加成）
+            decimal damage = played.IsXCost ? played.Damage * effectiveCost : played.Damage;
+            if (played.Id.Contains("SHIV", StringComparison.OrdinalIgnoreCase))
+            {
+                damage += next.ShivBonus;
+                if (!next.FirstShivBonusUsed && next.FirstShivBonus > 0)
+                {
+                    damage += next.FirstShivBonus;
+                    next.FirstShivBonusUsed = true;
+                }
+            }
+
+            if (damage > 0)
+            {
+                if (played.HitsAll)
+                {
+                    foreach (SimEnemy enemy in next.Enemies.Where(e => e.Alive).ToList())
+                    {
+                        int before = enemy.Hp;
+                        ApplyDamage(next, enemy, damage * (enemy.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                        if (enemy.Hp < before)
+                            ApplyEnvenom(next, enemy);
+                    }
+                }
+                else
+                {
+                    SimEnemy? target = next.Enemies.FirstOrDefault(e => e.Index == targetIndex && e.Alive);
+                    if (target is not null)
+                    {
+                        int before = target.Hp;
+                        ApplyDamage(next, target, damage * (target.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                        if (target.Hp < before)
+                            ApplyEnvenom(next, target);
+                    }
+                }
+            }
+
+            // 中毒 / 虚弱 / 易伤
+            SimEnemy? debuffTarget = next.Enemies.FirstOrDefault(e => e.Index == targetIndex);
+            if (debuffTarget is not null)
+            {
+                if (played.Poison > 0)
+                    debuffTarget.Poison += played.Poison;
+                if (played.Weak > 0)
+                    debuffTarget.Weak += played.Weak;
+                if (played.IsXCost && played.WeakPerX > 0)
+                    debuffTarget.Weak += played.WeakPerX * effectiveCost;
+                if (played.Vulnerable > 0)
+                {
+                    debuffTarget.Vulnerable += played.Vulnerable;
+                    debuffTarget.VulnerableThisTurn += played.Vulnerable;
+                }
+                if (played.IsXCost && played.StrengthLossPerX > 0)
+                    debuffTarget.StrengthLoss += played.StrengthLossPerX * effectiveCost;
+            }
+
+            if (played.StrengthLoss > 0 && played.HitsAll)
+            {
+                foreach (SimEnemy enemy in next.Enemies.Where(e => e.Alive))
+                    enemy.StrengthLoss += played.StrengthLoss;
+            }
+
+            // 弃掉整手牌：钢铁风暴（每张换小刀）或计算下注（抽等量）
+            if (played.DiscardHandForShivs || played.DiscardHandForDraw)
+            {
+                int count = next.Hand.Count;
+                next.Hand.Clear();
+                next.DiscardedThisTurn += count;
+                if (played.DiscardHandForShivs)
+                {
+                    for (int s = 0; s < count; s++)
+                        next.Hand.Add(Shiv);
+                }
+                else
+                {
+                    HandleDraws(next, count);
+                }
+            }
+
+            // 普通弃牌（含被弃触发）
+            for (int d = 0; d < played.Discard && next.Hand.Count > 0; d++)
+            {
+                int pick = ChooseDiscard(next.Hand);
+                CardEffect discarded = next.Hand[pick];
+                next.Hand.RemoveAt(pick);
+                next.DiscardedThisTurn++;
+                ApplyDiscardTrigger(next, discarded);
+            }
+
+            // 抽牌（子弹时间后本回合不能再抽）
+            if (!next.NoDraw && played.Draw > 0)
+                HandleDraws(next, played.Draw);
+
+            // 生成小刀
+            for (int s = 0; s < played.Shivs; s++)
+                next.Hand.Add(Shiv);            // 群蛇形态：每打出一张牌对随机一名敌人造成伤害（这里按残血最少的目标近似）
+            if (state.DamagePerCardPlayed > 0)
+            {
+                SimEnemy? victim = next.Enemies.Where(e => e.Alive).OrderBy(e => e.Hp).FirstOrDefault();
+                if (victim is not null)
+                    ApplyDamage(next, victim, state.DamagePerCardPlayed);
+            }
+
+            Dfs(next, depth + 1);
+        }        /// <summary>弃牌优先级：先弃能触发的（战术大师/本能反应），再弃期望伤害最低的。</summary>
+        private static int ChooseDiscard(List<CardEffect> hand)
+        {
+            for (int i = 0; i < hand.Count; i++)
+            {
+                if (SilentLogic.TriggersOnDiscard(hand[i].Source?.GetType().Name ?? ""))
+                    return i;
+            }
+            int worst = 0;
+            decimal worstScore = decimal.MaxValue;
+            for (int i = 0; i < hand.Count; i++)
+            {
+                decimal score = hand[i].Damage + hand[i].Block + hand[i].Poison * 2 + hand[i].Shivs * 4;
+                if (score < worstScore)
+                {
+                    worstScore = score;
+                    worst = i;
+                }
+            }
+            return worst;
+        }
+
+        /// <summary>被弃触发：战术大师给能量，本能反应抽牌。</summary>
+        private static void ApplyDiscardTrigger(SearchState state, CardEffect discarded)
+        {
+            string cls = discarded.Source?.GetType().Name ?? "";
+            if (cls == "Tactician")
+                state.Energy += discarded.EnergyGain > 0 ? discarded.EnergyGain : 1;
+            else if (cls == "Reflex")
+            {
+                int draw = discarded.Draw > 0 ? discarded.Draw : 2;
+                for (int d = 0; d < draw && state.Draw.Count > 0; d++)
+                    state.Hand.Add(state.Draw.Dequeue());
+            }
+        }
+
+        /// <summary>抽牌（含腐蚀波/速行者的抽牌副作用）。</summary>
+        private static void HandleDraws(SearchState state, int count)
+        {
+            for (int d = 0; d < count && state.Draw.Count > 0; d++)
+            {
+                state.Hand.Add(state.Draw.Dequeue());
+
+                if (state.PoisonPerDraw > 0)
+                {
+                    foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive))
+                        enemy.Poison += state.PoisonPerDraw;
+                }
+
+                if (state.DamagePerDraw > 0)
+                {
+                    foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
+                        ApplyDamage(state, enemy, state.DamagePerDraw);
+                }
+            }
+        }
+
+        /// <summary>涂毒：攻击造成伤害时给目标叠中毒。</summary>
+        private static void ApplyEnvenom(SearchState state, SimEnemy target)
+        {
+            if (state.Envenom > 0)
+                target.Poison += state.Envenom;
+        }
+
+        private static void ApplyDamage(SearchState state, SimEnemy target, decimal amount)
+        {
+            int dealt = Math.Min(target.Hp, (int)amount);
+            if (dealt <= 0)
+                return;
+            target.Hp -= dealt;
+            state.Damage += dealt;
+        }
+
+        private void Consider(SearchState state)
+        {
+            int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoison).Sum(e => e.Incoming);
+            int totalBlock = CurrentBlock + state.Block;
+            int hpLoss = Math.Max(0, incoming - totalBlock);
+            bool lethal = hpLoss >= CurrentHp;
+
+            var plan = new TurnPlan
+            {
+                Actions = new List<PlannedAction>(state.Actions),
+                Damage = state.Damage,
+                Block = state.Block,
+                EnergySpent = state.EnergySpent,
+                EnergyGained = state.EnergyGained,
+                HpLoss = hpLoss,
+                Lethal = lethal,
+
+                Kills = state.Enemies.Count(e => !e.Alive || e.DiesToPoison),
+                EnemiesAfter = state.Enemies.Select(e => e.Clone()).ToList(),
+            };
+
+            if (!_hasBest)
+            {
+                Best = plan;
+                _hasBest = true;
+                return;
+            }
+
+            if (IsBetter(plan, Best))
+                Best = plan;
+        }
+
+        /// <summary>
+        /// 打分顺序：不死 → 掉血 ≤ 预算（超出预算就先比谁掉血少）→ 优先击杀 → 最大伤害。
+        /// 「优先击杀」是跨回合考量：打死一只怪等于省掉它下一轮的攻击。
+        /// </summary>
+        private static bool IsBetter(TurnPlan candidate, TurnPlan current)
+        {
+            if (candidate.Lethal != current.Lethal)
+                return !candidate.Lethal;
+
+            int budget = AdvisorSettings.HpLossBudget;
+            bool candidateInBudget = candidate.HpLoss <= budget;
+            bool currentInBudget = current.HpLoss <= budget;
+
+            if (candidateInBudget != currentInBudget)
+                return candidateInBudget;
+
+            if (!candidateInBudget && candidate.HpLoss != current.HpLoss)
+                return candidate.HpLoss < current.HpLoss;
+
+            if (candidate.Kills != current.Kills)
+                return candidate.Kills > current.Kills;
+
+            return candidate.Damage > current.Damage;
+        }
+    }
+
+    /// <summary>把一张手牌解析成可量化的效果（猎人专有语义见 SilentLogic）。</summary>
+    private static CardEffect Analyze(CardModel card, AnalyzeContext? context)
+    {
+        string className = card.GetType().Name;
+        string name = SafeName(card);
+        int cost = SafeCost(card);
+        bool supported = true;
+        string note = "";
+
+        string unsupported = SilentLogic.UnsupportedReason(className);
+        if (unsupported.Length > 0)
+        {
+            supported = false;
+            note = unsupported;
+        }
+        else if (card.EnergyCost is { CostsX: true } && !SilentLogic.IsXCost(className))
+        {
+            supported = false;
+            note = "X 费暂不支持";
+        }
+
+        Creature? target = context?.Target;
+
+        // 伤害
+        decimal damage = 0m;
+        bool hitsAll = card.TargetType == TargetType.AllEnemies;
+        int hits = 1;
+        if (card.Type == CardType.Attack || SilentLogic.ScalesWithAttacksPlayed(className) || SilentLogic.ScalesWithSkillsInHand(className))
+        {
+            decimal perHit = target is null ? 0m : EstimateDamage(card, target);
+            hits = HitCount(card);
+
+            if (SilentLogic.ScalesWithAttacksPlayed(className))
+                hits = Math.Max(1, context?.AttacksPlayedThisTurn ?? 1);
+            else if (SilentLogic.ScalesWithSkillsInHand(className))
+                hits = Math.Max(1, CountSkillsInHand(context));
+
+            damage = perHit * hits;
+        }
+
+        // 格挡
+        int block = ReadByType(card, v => v is BlockVar) ?? ReadInt(card, "Block");
+        if (SilentLogic.BlockFromEnemyPoison(className) && context is not null)
+        {
+            block = context.Enemies.Sum(e => e.Poison);
+            note = "格挡=敌人中毒总和";
+        }
+
+        // 卡面效果
+        int poison = ReadByType(card, v => v is PowerVar<PoisonPower>) ?? ReadInt(card, "PoisonPower");
+        int weak = ReadByType(card, v => v is PowerVar<WeakPower>) ?? ReadInt(card, "WeakPower");
+        int vulnerable = ReadByType(card, v => v is PowerVar<VulnerablePower>) ?? ReadInt(card, "VulnerablePower");
+        int strengthLoss = ReadInt(card, "StrengthLoss");
+        int energyGain = ReadByType(card, v => v is EnergyVar) ?? ReadInt(card, "Energy");
+        int dexterity = ReadByType(card, v => v is PowerVar<DexterityPower>) ?? ReadInt(card, "DexterityPower");
+
+        // Cards 变量：抽牌 or 生成小刀（逐张表）
+        int cardsVar = ReadByType(card, v => v is CardsVar) ?? ReadInt(card, "Cards");
+        int draw = 0;
+        int shivs = 0;
+        switch (SilentLogic.CardsMeaning(className))
+        {
+            case CardsVarMeaning.Draw:
+                draw = cardsVar;
+                break;
+            case CardsVarMeaning.GenerateShivs:
+                shivs = cardsVar;
+                break;
+        }
+
+        // Shivs 变量
+        int shivsVar = ReadIntAny(card, "Shivs", "Shiv");
+        if (shivsVar > 0 && SilentLogic.ShivsFromShivsVar(className))
+            shivs += shivsVar;
+
+        // 固定抽牌
+        if (className == "DaggerThrow")
+            draw = Math.Max(draw, 1);
+
+        // 弃牌
+        int discard = SilentLogic.FixedDiscard(className);
+        if (SilentLogic.DiscardsCardsVar(className))
+            discard += cardsVar;
+
+        // 条件限制
+        if (SilentLogic.RequiresEmptyDrawPile(className))
+        {
+            int drawCount = context?.DrawPileCount ?? 1;
+            if (drawCount > 0)
+            {
+                supported = false;
+                note = $"需抽牌堆为空（当前 {drawCount} 张）";
+            }
+            else
+            {
+                note = "抽牌堆已空，可打出";
+            }
+        }
+
+        if (damage == 0m && block == 0 && poison == 0 && weak == 0 && vulnerable == 0
+            && strengthLoss == 0 && draw == 0 && shivs == 0 && energyGain == 0 && dexterity == 0 && discard == 0)
+        {
+            if (card.Type == CardType.Power)
+                note = string.IsNullOrEmpty(note) ? "能力牌（本回合无即时收益）" : note;
+            else if (supported && string.IsNullOrEmpty(note))
+            {
+                supported = false;
+                note = "未建模";
+            }
+        }
+
+        // ---- v0.6 机制 ----
+        bool isX = SilentLogic.IsXCost(className);
+        bool handFree = SilentLogic.MakesHandFree(className);
+        bool noDraw = handFree;
+        bool discardHandShivs = SilentLogic.DiscardsHandForShivs(className);
+        bool discardHandDraw = SilentLogic.DiscardsHandForDraw(className);
+        int shivBonus = SilentLogic.GrantsShivBonus(className) ? ReadInt(card, "AccuracyPower") : 0;
+        int blockPerCard = SilentLogic.GrantsBlockPerCard(className) ? ReadInt(card, "AfterimagePower") : 0;
+        int weakPerX = className == "Malaise" ? 1 : 0;
+        int strengthLossPerX = className == "Malaise" ? 1 : 0;
+        int envenom = SilentLogic.GrantsEnvenom(className) ? ReadInt(card, "EnvenomPower") : 0;
+        int poisonPerDraw = SilentLogic.GrantsPoisonPerDraw(className) ? ReadInt(card, "CorrosiveWave") : 0;
+        int damagePerCardPlayed = SilentLogic.GrantsDamagePerCardPlayed(className) ? ReadInt(card, "SerpentFormPower") : 0;
+        int damagePerDraw = SilentLogic.GrantsDamagePerDraw(className) ? ReadInt(card, "SpeedsterPower") : 0;
+        bool doubleBlock = SilentLogic.DoublesBlock(className);
+        int firstShivBonus = SilentLogic.GrantsFirstShivBonus(className) ? ReadInt(card, "PhantomBladesPower") : 0;
+        if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
+            vulnerable = ReadInt(card, "Power");
+        string powerNote = SilentLogic.ImmediatePowerNote(className);
+        if (powerNote.Length > 0)
+            note = powerNote;
+        if (isX)
+            note = "X 费（按剩余能量算）";
+        if (discardHandShivs || discardHandDraw)
+            note = discardHandShivs ? "弃整手，每张换小刀" : "弃整手，抽等量";
+
+        return new CardEffect
+        {
+            Name = name,
+            Id = SafeId(card),
+            Cost = cost,
+            Damage = damage,
+            HitsAll = hitsAll,
+            Hits = hits,
+            Block = block,
+            Poison = poison,
+            Weak = weak,
+            Vulnerable = vulnerable,
+            StrengthLoss = strengthLoss,
+            Draw = draw,
+            Shivs = shivs,
+            EnergyGain = energyGain,
+            Dexterity = dexterity,            Discard = discard,
+            IsXCost = isX,
+            DamagePerX = isX ? damage : 0m,
+            WeakPerX = weakPerX,
+            StrengthLossPerX = strengthLossPerX,
+            HandFree = handFree,
+            NoDraw = noDraw,
+            DiscardHandForShivs = discardHandShivs,
+            DiscardHandForDraw = discardHandDraw,
+            ShivBonus = shivBonus,            BlockPerCard = blockPerCard,
+            Envenom = envenom,
+            PoisonPerDraw = poisonPerDraw,
+            DamagePerCardPlayed = damagePerCardPlayed,
+            DamagePerDraw = damagePerDraw,
+            DoubleBlock = doubleBlock,
+            FirstShivBonus = firstShivBonus,
+            Supported = supported,
+            Note = note,
+            Source = card,
+        };
+    }
+
+    private static int CountSkillsInHand(AnalyzeContext? context) => Math.Max(1, context?.HandSize ?? 1);
+
+    /// <summary>单只怪本回合的意图（总伤害 + 段数）。</summary>
+    public static (int Total, int Hits) IncomingOf(Creature enemy, IReadOnlyList<Creature> allies)
+    {
+        int total = 0;
+        int hits = 0;
+        try
+        {
+            if (!enemy.IsAlive || enemy.Monster is null)
+                return (0, 0);
+            foreach (AbstractIntent intent in enemy.Monster.NextMove?.Intents ?? Array.Empty<AbstractIntent>())
+            {
+                if (intent is AttackIntent attack)
+                {
+                    int single = Math.Max(0, attack.GetSingleDamage(allies, enemy));
+                    int repeats = Math.Max(1, attack.Repeats);
+                    total += single * repeats;
+                    hits += repeats;
+                }
+            }
+        }
+        catch
+        {
+            // 读不到就当 0
+        }
+        return (total, Math.Max(1, hits));
+    }
+
+    /// <summary>小刀基础伤害：规范小刀 + 力量 + 精准。</summary>
+    private static decimal BuildShivDamage(Creature? target, int strength, int accuracy, bool playerWeak)
+    {
+        decimal baseDamage = 4m;
+        try
+        {
+            Shiv canonical = ModelDb.Card<Shiv>();
+            if (canonical.DynamicVars.TryGetValue("Damage", out DynamicVar variable))
+                baseDamage = variable.BaseValue;
+        }
+        catch
+        {
+            // 用默认值
+        }
+        decimal shiv = baseDamage + strength + accuracy;
+        if (playerWeak)
+            shiv = shiv * 3 / 4;
+        return Math.Max(0m, Math.Floor(shiv));
+    }
+
+    private static CardEffect BuildShivEffect(Creature? target, decimal shivDamage)
+    {
+        try
+        {
+            Shiv canonical = ModelDb.Card<Shiv>();
+            return new CardEffect
+            {
+                Name = SafeName(canonical),
+                Id = SafeId(canonical),
+                Cost = canonical.EnergyCost?.Canonical ?? 0,
+                Damage = shivDamage,
+                Supported = true,
+                Note = "小刀",
+                Source = canonical,
+            };
+        }
+        catch
+        {
+            return new CardEffect { Name = "小刀", Id = "SHIV", Cost = 0, Damage = 4m, Supported = true, Note = "小刀" };
+        }
+    }
+
+    private static decimal EstimateDamage(CardModel card, Creature target)
+    {
+        try
+        {
+            if (!card.DynamicVars.TryGetValue("Damage", out DynamicVar variable))
+                return 0m;
+
+            // 用游戏自己维护的卡面预览值：它已经算进了力量、虚弱、易伤等修正
+            // （自己调 UpdateCardPreview 反而会把虚弱之类的修正覆盖掉，也会动到卡面显示）
+            decimal preview = variable.PreviewValue > 0 ? variable.PreviewValue : variable.BaseValue;
+            return Math.Max(0m, Math.Floor(preview));
+        }
+        catch
+        {
+            return 0m;
+        }
+    }
+
+    private static int ReadPower<T>(Creature creature) where T : PowerModel
+    {
+        try
+        {
+            return creature.GetPower<T>()?.Amount ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int HitCount(CardModel card)
+        => Math.Max(1, ReadByType(card, v => v is RepeatVar) ?? ReadIntAny(card, "Repeat", "Repeats"));
+
+    private static int? ReadByType(CardModel card, Func<DynamicVar, bool> match)
+    {
+        try
+        {
+            foreach (KeyValuePair<string, DynamicVar> pair in card.DynamicVars)
+            {
+                if (match(pair.Value))
+                    return pair.Value.IntValue;
+            }
+        }
+        catch
+        {
+            // 忽略
+        }
+        return null;
+    }
+
+    private static int ReadIntAny(CardModel card, params string[] keys)
+    {
+        foreach (string key in keys)
+        {
+            int value = ReadInt(card, key);
+            if (value != 0)
+                return value;
+        }
+        return 0;
+    }
+
+    private static int ReadInt(CardModel card, string key)
+    {
+        try
+        {
+            return card.DynamicVars.TryGetValue(key, out DynamicVar variable) ? variable.IntValue : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int SafeCost(CardModel card)
+    {
+        try
+        {
+            return card.EnergyCost?.Canonical ?? 99;
+        }
+        catch
+        {
+            return 99;
+        }
+    }
+
+    private static string SafeId(CardModel card)
+    {
+        try
+        {
+            return card.Id.ToString() ?? "?";
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
+    /// <summary>卡名走游戏本地化表。</summary>
+    public static string SafeName(CardModel card)
+    {
+        string fallback = "?";
+        try
+        {
+            fallback = SafeId(card);
+            LocString description = card.Description;
+            string table = description.LocTable;
+            string key = description.LocEntryKey;
+            string baseKey = key.EndsWith(".description", StringComparison.Ordinal)
+                ? key[..^".description".Length]
+                : key;
+
+            foreach (string candidate in new[] { baseKey + ".title", baseKey + ".name", baseKey })
+            {
+                if (!LocString.Exists(table, candidate))
+                    continue;
+                LocString? loc = LocString.GetIfExists(table, candidate);
+                if (loc is null)
+                    continue;
+                string text = loc.GetFormattedText();
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text.Trim();
+            }
+        }
+        catch
+        {
+            // 落到 Id
+        }
+        return fallback;
+    }
+
+    public static string DescribeVars(CardModel card)
+    {
+        try
+        {
+            var parts = new List<string>();
+            foreach (KeyValuePair<string, DynamicVar> pair in card.DynamicVars)
+                parts.Add($"{pair.Key}={pair.Value.BaseValue:0.#}/{pair.Value.PreviewValue:0.#}");
+            return string.Join(",", parts);
+        }
+        catch (Exception ex)
+        {
+            return "vars 读取失败：" + ex.Message;
+        }
+    }
+
+    public static string DescribeIntent(Creature enemy, IReadOnlyList<Creature> allies)
+    {
+        try
+        {
+            if (enemy.Monster is null)
+                return "非怪物";
+            string moveId = enemy.Monster.NextMove?.Id ?? "(null)";
+            var parts = new List<string>();
+            foreach (AbstractIntent intent in enemy.Monster.NextMove?.Intents ?? Array.Empty<AbstractIntent>())
+            {
+                if (intent is AttackIntent attack)
+                    parts.Add($"Attack[single={attack.GetSingleDamage(allies, enemy)},repeats={attack.Repeats}]");
+                else
+                    parts.Add(intent.GetType().Name);
+            }
+            return $"move={moveId} intents=[{string.Join(",", parts)}]";
+        }
+        catch (Exception ex)
+        {
+            return "意图读取失败：" + ex.Message;
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
