@@ -9,6 +9,18 @@ using MegaCrit.Sts2.Core.Models.Powers;
 
 namespace DamageAdvisor;
 
+/// <summary>伤害/格挡随"当前搜索状态"变化的牌（必须出牌时才算，不能提前算死）。</summary>
+internal enum ScalingKind
+{
+    None,
+    /// <summary>终结技：本回合每打出过一张攻击牌，就造成一次伤害（含自身）。</summary>
+    AttacksPlayed,
+    /// <summary>飞镖：手牌中每有一张技能牌，就造成一次伤害。</summary>
+    SkillsInHand,
+    /// <summary>蜃景：格挡 = 所有敌人中毒层数总和。</summary>
+    EnemyPoisonTotal,
+}
+
 /// <summary>一张牌在本回合的可量化效果。</summary>
 internal sealed class CardEffect
 {
@@ -65,6 +77,18 @@ internal sealed class CardEffect
 
 
     public bool IsSly { get; init; }
+
+
+
+    public bool IsAttack { get; init; }
+
+
+
+    public bool IsSkill { get; init; }
+
+
+
+    public ScalingKind Scaling { get; init; }
 
 
 
@@ -289,6 +313,8 @@ internal static class DamageModel
     {
         public int Energy { get; set; }
         public int Dex { get; set; }
+        public int AttacksPlayed { get; set; }
+
         public int DiscardedThisTurn { get; set; }
         public bool HandFree { get; set; }
         public bool NoDraw { get; set; }
@@ -394,6 +420,7 @@ internal static class DamageModel
                 Energy = state.Energy - effectiveCost + card.EnergyGain,
                 Dex = state.Dex + card.Dexterity,
                 DiscardedThisTurn = state.DiscardedThisTurn,
+                AttacksPlayed = state.AttacksPlayed + (card.IsAttack ? 1 : 0),
                 HandFree = state.HandFree || card.HandFree,
                 NoDraw = state.NoDraw || card.NoDraw,
                 ShivBonus = state.ShivBonus + card.ShivBonus,
@@ -411,7 +438,7 @@ internal static class DamageModel
                 Actions = new List<PlannedAction>(state.Actions),
                 Damage = state.Damage,
                 Block = state.Block
-                        + (card.Block + (card.Block > 0 ? state.Dex : 0)) * (state.DoubleBlock || card.DoubleBlock ? 2 : 1)
+                            + (BlockGain(card, state) + (card.Block > 0 ? state.Dex : 0)) * (state.DoubleBlock || card.DoubleBlock ? 2 : 1)
                         + (card.Block > 0 ? 0 : state.BlockPerCard),
                 EnergySpent = state.EnergySpent + effectiveCost,
                 EnergyGained = state.EnergyGained + card.EnergyGain,
@@ -423,6 +450,40 @@ internal static class DamageModel
 
             // 这张牌造成的伤害（X 费按已投入能量放大；小刀补上本回合的精准加成）
             decimal damage = played.IsXCost ? played.Damage * effectiveCost : played.Damage;
+
+            switch (played.Scaling)
+
+
+            {
+
+
+                case ScalingKind.AttacksPlayed:
+
+
+                    // 终结技：含自身在内，本回合已打出的攻击牌数
+
+
+                    damage = played.Damage * Math.Max(1, state.AttacksPlayed + 1);
+
+
+                    break;
+
+
+                case ScalingKind.SkillsInHand:
+
+
+                    // 飞镖：按"此刻手牌里的技能牌数"（打出技能会减少计数，所以它会被排到前面）
+
+
+                    damage = played.Damage * Math.Max(1, next.Hand.Count(c => c.IsSkill));
+
+
+                    break;
+
+
+            }
+
+
 
             if (played.DamagePerDiscard > 0 && next.DiscardedThisTurn > 0)
 
@@ -722,6 +783,28 @@ internal static class DamageModel
             return sb.ToString();
         }
 
+        /// <summary>这张牌此刻能提供多少格挡（蜃景按当前敌人中毒总和）。</summary>
+
+
+        private static int BlockGain(CardEffect card, SearchState state)
+
+
+        {
+
+
+            if (card.Scaling == ScalingKind.EnemyPoisonTotal)
+
+
+                return state.Enemies.Where(e => e.Alive).Sum(e => e.Poison);
+
+
+            return card.Block;
+
+
+        }
+
+
+
         private void Consider(SearchState state)
         {
             int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoison).Sum(e => e.Incoming);
@@ -890,20 +973,32 @@ internal static class DamageModel
         Creature? target = context?.Target;
 
         // 伤害
+
+
         decimal damage = 0m;
+
+
+        int repeats = HitCount(card);
         bool hitsAll = card.TargetType == TargetType.AllEnemies;
         int hits = 1;
 
-        int repeats = HitCount(card);
+        // 伤害/格挡随搜索状态变化的牌，统一在 PlayCard 里实时计算
+        ScalingKind scaling = ScalingKind.None;
+        if (SilentLogic.ScalesWithAttacksPlayed(className))
+            scaling = ScalingKind.AttacksPlayed;
+        else if (SilentLogic.ScalesWithSkillsInHand(className))
+            scaling = ScalingKind.SkillsInHand;
+        else if (SilentLogic.BlockFromEnemyPoison(className))
+            scaling = ScalingKind.EnemyPoisonTotal;
+
         if (card.Type == CardType.Attack || SilentLogic.ScalesWithAttacksPlayed(className) || SilentLogic.ScalesWithSkillsInHand(className))
         {
             decimal perHit = target is null ? 0m : EstimateDamage(card, target);
             hits = HitCount(card);
 
-            if (SilentLogic.ScalesWithAttacksPlayed(className))
-                hits = Math.Max(1, context?.AttacksPlayedThisTurn ?? 1);
-            else if (SilentLogic.ScalesWithSkillsInHand(className))
-                hits = Math.Max(1, CountSkillsInHand(context));
+            // 终结技/飞镖：这里的 Damage 是"每次"的伤害，次数在出牌时按状态计算
+            if (scaling != ScalingKind.None)
+                hits = 1;
 
             damage = perHit * hits;
         }
@@ -1054,6 +1149,9 @@ internal static class DamageModel
 
 
             IsSly = isSly,
+            IsAttack = card.Type == CardType.Attack,
+            IsSkill = card.Type == CardType.Skill,
+            Scaling = scaling,
 
 
 
@@ -1378,6 +1476,10 @@ internal static class DamageModel
         }
     }
 }
+
+
+
+
 
 
 
