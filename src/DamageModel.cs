@@ -183,7 +183,9 @@ internal sealed class TurnAdvice
 /// </summary>
 internal static class DamageModel
 {
-    private const int MaxNodes = 80000;
+    // 记忆化后 Nodes 计的是"唯一状态数"（重复状态提前返回），所以上限可以低很多：
+// 既覆盖足够的搜索空间，又避免主线程卡帧。
+    private const int MaxNodes = 25000;
 
     public static TurnAdvice Solve(
         IReadOnlyList<CardModel> hand,
@@ -322,8 +324,16 @@ internal static class DamageModel
         public int Nodes { get; private set; }
         private bool _hasBest;
 
+        /// <summary>已探索过的等价状态（同一手牌/能量/敌人状态不重复展开，消除出牌顺序带来的排列爆炸）。</summary>
+
+        private readonly HashSet<string> _visited = new();
+
         public void Dfs(SearchState state, int depth)
         {
+            string key = BuildStateKey(state);
+            if (_visited.Count < 100000 && !_visited.Add(key))
+                return;
+
             Nodes++;
             Consider(state);
 
@@ -683,6 +693,33 @@ internal static class DamageModel
                 return;
             target.Hp -= dealt;
             state.Damage += dealt;
+        }        /// <summary>状态指纹：能量/格挡/敏捷/弃牌数/各类标记 + 手牌 + 抽牌堆 + 敌人状态。</summary>
+        private static string BuildStateKey(SearchState state)
+        {
+            var sb = new System.Text.StringBuilder(128);
+            sb.Append(state.Energy).Append('|').Append(state.Block).Append('|').Append(state.Dex).Append('|')
+              .Append(state.DiscardedThisTurn).Append('|')
+              .Append(state.HandFree ? 1 : 0).Append(state.NoDraw ? 1 : 0).Append(state.DoubleBlock ? 1 : 0)
+              .Append(state.FirstShivBonusUsed ? 1 : 0)
+              .Append('|').Append(state.ShivBonus).Append('|').Append(state.BlockPerCard).Append('|')
+              .Append(state.Envenom).Append('|').Append(state.PoisonPerDraw).Append('|')
+              .Append(state.DamagePerCardPlayed).Append('|').Append(state.DamagePerDraw).Append('|')
+              .Append(state.FirstShivBonus).Append('|');
+
+            foreach (string id in state.Hand.Select(c => c.Id).OrderBy(x => x, StringComparer.Ordinal))
+                sb.Append(id).Append(',');
+
+            sb.Append('|');
+            foreach (string id in state.Draw.Select(c => c.Id))
+                sb.Append(id).Append(',');
+
+            sb.Append('|');
+            foreach (SimEnemy e in state.Enemies.OrderBy(x => x.Index))
+                sb.Append(e.Index).Append(':').Append(e.Hp).Append(':').Append(e.Block).Append(':')
+                  .Append(e.Poison).Append(':').Append(e.Weak).Append(':').Append(e.Vulnerable)
+                  .Append(':').Append(e.StrengthLoss).Append(',');
+
+            return sb.ToString();
         }
 
         private void Consider(SearchState state)
@@ -1341,6 +1378,8 @@ internal static class DamageModel
         }
     }
 }
+
+
 
 
 
