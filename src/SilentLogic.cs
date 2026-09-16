@@ -21,7 +21,7 @@ internal static class SilentLogic
     public static CardsVarMeaning CardsMeaning(string className) => className switch
     {
         "BladeDance" or "CloakAndDagger" or "UpMySleeve" or "BladeOfInk" => CardsVarMeaning.GenerateShivs,
-        "Acrobatics" or "Adrenaline" or "Backflip" or "Expertise" or "ShadowStep" or "Prepared" or "Reflex"
+        "Acrobatics" or "Adrenaline" or "Backflip" or "Expertise" or "Prepared" or "Reflex"
             => CardsVarMeaning.Draw,
         _ => CardsVarMeaning.None,
     };
@@ -69,6 +69,11 @@ internal static class SilentLogic
 
     /// <summary>弃掉整手牌、每张换一把小刀（钢铁风暴）。</summary>
     public static bool DiscardsHandForShivs(string className) => className is "StormOfSteel";
+    /// <summary>
+    /// 暗影步：丢弃所有手牌，下回合攻击翻倍。
+    /// ⚠️ 它的 Cards 变量**不是抽牌数**——描述是"丢弃所有手牌"，不能按 CardsMeaning.Draw 处理。
+    /// </summary>
+    public static bool DiscardsEntireHand(string className) => className is "ShadowStep";
 
     /// <summary>弃掉整手牌、抽等量牌（计算下注）。</summary>
     public static bool DiscardsHandForDraw(string className) => className is "CalculatedGamble";
@@ -127,6 +132,7 @@ internal static class SilentLogic
         _ => "",
     };
 }
+
 
 
 

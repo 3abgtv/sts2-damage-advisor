@@ -49,6 +49,8 @@ internal sealed class CardEffect
     public bool NoDraw { get; init; }
     public bool DiscardHandForShivs { get; init; }
     public bool DiscardHandForDraw { get; init; }
+    /// <summary>弃掉整手牌且不补充（暗影步）。</summary>
+    public bool DiscardsEntireHand { get; init; }
     public int ShivBonus { get; init; }
     public int BlockPerCard { get; init; }
     /// <summary>涂毒：每点未被格挡的攻击伤害附加的中毒层数。</summary>
@@ -563,20 +565,28 @@ internal static class DamageModel
             }
 
             // 弃掉整手牌：钢铁风暴（每张换小刀）或计算下注（抽等量）
-            if (played.DiscardHandForShivs || played.DiscardHandForDraw)
+            if (played.DiscardHandForShivs || played.DiscardHandForDraw || played.DiscardsEntireHand)
             {
-                int count = next.Hand.Count;
+                List<CardEffect> discardedAll = new List<CardEffect>(next.Hand);
                 next.Hand.Clear();
-                next.DiscardedThisTurn += count;
+
+                // 被弃掉的奇巧(Sly)牌会立刻自动打出（与游戏一致）
+                foreach (CardEffect dc in discardedAll)
+                {
+                    next.DiscardedThisTurn++;
+                    ApplyDiscardTrigger(next, dc, Shiv);
+                }
+
                 if (played.DiscardHandForShivs)
                 {
-                    for (int s = 0; s < count; s++)
+                    for (int s = 0; s < discardedAll.Count; s++)
                         next.Hand.Add(Shiv);
                 }
-                else
+                else if (played.DiscardHandForDraw)
                 {
-                    HandleDraws(next, count);
+                    HandleDraws(next, discardedAll.Count);
                 }
+                // 暗影步：弃整手且不补充
             }
 
             // 普通弃牌（含被弃触发）
@@ -1086,6 +1096,7 @@ internal static class DamageModel
         bool noDraw = handFree;
         bool discardHandShivs = SilentLogic.DiscardsHandForShivs(className);
         bool discardHandDraw = SilentLogic.DiscardsHandForDraw(className);
+        bool discardsEntireHand = SilentLogic.DiscardsEntireHand(className);
         int shivBonus = SilentLogic.GrantsShivBonus(className) ? ReadInt(card, "AccuracyPower") : 0;
         int blockPerCard = SilentLogic.GrantsBlockPerCard(className) ? ReadInt(card, "AfterimagePower") : 0;
         int weakPerX = className == "Malaise" ? 1 : 0;
@@ -1108,7 +1119,11 @@ internal static class DamageModel
         if (isX)
             note = "X 费（按剩余能量算）";
         if (discardHandShivs || discardHandDraw)
-            note = discardHandShivs ? "弃整手，每张换小刀" : "弃整手，抽等量";
+                note = discardHandShivs ? "弃整手，每张换小刀" : "弃整手，抽等量";
+
+        if (discardsEntireHand)
+
+            note = "弃整手（下回合攻击翻倍，未建模）";
 
         // 所有机制都算完之后再判定"是否完全没有任何可量化效果"：
 
@@ -1122,7 +1137,7 @@ internal static class DamageModel
             || strengthLoss != 0 || draw != 0 || shivs != 0 || energyGain != 0 || dexterity != 0 || discard != 0
 
 
-            || discardHandShivs || discardHandDraw || handFree || shivBonus != 0 || blockPerCard != 0
+            || discardHandShivs || discardHandDraw || discardsEntireHand || handFree || shivBonus != 0 || blockPerCard != 0
 
 
             || envenom != 0 || poisonPerDraw != 0 || damagePerCardPlayed != 0 || damagePerDraw != 0
@@ -1188,6 +1203,7 @@ internal static class DamageModel
             NoDraw = noDraw,
             DiscardHandForShivs = discardHandShivs,
             DiscardHandForDraw = discardHandDraw,
+            DiscardsEntireHand = discardsEntireHand,
             ShivBonus = shivBonus,            BlockPerCard = blockPerCard,
             Envenom = envenom,
             PoisonPerDraw = poisonPerDraw,
@@ -1533,6 +1549,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 

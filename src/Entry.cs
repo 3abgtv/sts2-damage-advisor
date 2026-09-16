@@ -23,7 +23,7 @@ namespace DamageAdvisor;
 public static class Entry
 {
     public const string Tag = "[DamageAdvisor]";
-    public const string Version = "0.9.5";
+    public const string Version = "0.9.6";
 
     private static AdvisorRoot? _node;
 
@@ -263,6 +263,7 @@ public static class Entry
         }
     }
 }
+
 
 
 
