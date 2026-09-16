@@ -1079,17 +1079,6 @@ internal static class DamageModel
             }
         }
 
-        if (damage == 0m && block == 0 && poison == 0 && weak == 0 && vulnerable == 0
-            && strengthLoss == 0 && draw == 0 && shivs == 0 && energyGain == 0 && dexterity == 0 && discard == 0)
-        {
-            if (card.Type == CardType.Power)
-                note = string.IsNullOrEmpty(note) ? "能力牌（本回合无即时收益）" : note;
-            else if (supported && string.IsNullOrEmpty(note))
-            {
-                supported = false;
-                note = "未建模";
-            }
-        }
 
         // ---- v0.6 机制 ----
         bool isX = SilentLogic.IsXCost(className);
@@ -1120,6 +1109,59 @@ internal static class DamageModel
             note = "X 费（按剩余能量算）";
         if (discardHandShivs || discardHandDraw)
             note = discardHandShivs ? "弃整手，每张换小刀" : "弃整手，抽等量";
+
+        // 所有机制都算完之后再判定"是否完全没有任何可量化效果"：
+
+
+        // 特殊机制（弃整手/手牌免费/奇巧加成/能力联动…）也要计入，否则会被误判为未建模
+
+
+        bool hasEffect = damage != 0m || block != 0 || poison != 0 || weak != 0 || vulnerable != 0
+
+
+            || strengthLoss != 0 || draw != 0 || shivs != 0 || energyGain != 0 || dexterity != 0 || discard != 0
+
+
+            || discardHandShivs || discardHandDraw || handFree || shivBonus != 0 || blockPerCard != 0
+
+
+            || envenom != 0 || poisonPerDraw != 0 || damagePerCardPlayed != 0 || damagePerDraw != 0
+
+
+            || doubleBlock || firstShivBonus != 0;
+
+
+
+        if (!hasEffect && string.IsNullOrEmpty(note))
+
+
+        {
+
+
+            if (card.Type == CardType.Power)
+
+
+                note = "能力牌（本回合无即时收益）";
+
+
+            else
+
+
+            {
+
+
+                supported = false;
+
+
+                note = "未建模";
+
+
+            }
+
+
+        }
+
+
 
         return new CardEffect
         {
@@ -1259,8 +1301,12 @@ internal static class DamageModel
     {
         try
         {
+            // 精确切击/谋杀/铭记死亡这类计算型伤害放在 CalculatedDamage 里
             if (!card.DynamicVars.TryGetValue("Damage", out DynamicVar? variable) || variable is null)
-                return 0m;
+            {
+                if (!card.DynamicVars.TryGetValue("CalculatedDamage", out variable) || variable is null)
+                    return 0m;
+            }
 
             // 用游戏自己维护的卡面预览值：它已经算进了力量、虚弱、易伤等修正
             // （自己调 UpdateCardPreview 反而会把虚弱之类的修正覆盖掉，也会动到卡面显示）
@@ -1487,6 +1533,7 @@ internal static class DamageModel
         }
     }
 }
+
 
 
 
