@@ -41,13 +41,41 @@ internal static class SilentLogic
     public static bool ShivsFromShivsVar(string className)
         => className is "FanOfKnives" or "LeadingStrike" or "HiddenDaggers";
 
-    /// <summary>立即获得敏捷（影响本回合后续格挡）。</summary>
-    public static bool GrantsDexterity(string className)
-        => className is "Footwork" or "Anticipate" or "Abrasive" or "Fade";
+    /// <summary>
+    /// 描述里写死"抽 N 张"、没有 Cards 变量的牌。
+    /// ⚠️ 逃脱计划（EscapePlan）的"抽1张"只在描述文本里，没有变量可读，必须在这里补。
+    /// </summary>
+    public static int FixedDraw(string className) => className switch
+    {
+        "DaggerThrow" or "EscapePlan" => 1,
+        _ => 0,
+    };
 
-    /// <summary>被丢弃时触发的牌。</summary>
-    public static bool TriggersOnDiscard(string className)
-        => className is "Tactician" or "Reflex";
+    /// <summary>
+    /// 描述里写死"N 次"的多段攻击（没有 Repeat 变量）。
+    /// ⚠️ 匕首雨（DaggerSpray）是"造成4点伤害两次"，漏了这段就等于伤害砍半。
+    /// </summary>
+    public static int HardcodedHits(string className) => className switch
+    {
+        "DaggerSpray" => 2,
+        _ => 1,
+    };
+
+    /// <summary>打出后本回合所有小刀改为攻击全体（刀扇）。</summary>
+    public static bool MakesShivsHitAll(string className) => className is "FanOfKnives";
+
+    /// <summary>打出时清除目标身上全部格挡（暴露；顺带清人工制品，本模型不跟踪人工制品）。</summary>
+    public static bool RemovesEnemyBlock(string className) => className is "Expose";
+
+    /// <summary>
+    /// 能量收益发生在"下个回合"而不是本回合（侧步）。
+    /// ⚠️ 它的变量就叫 Energy，不排除掉会白送本回合 1 点能量，推荐出根本打不出的连招。
+    /// </summary>
+    public static bool GainsEnergyNextTurn(string className) => className is "Sidestep";
+
+    /// <summary>场上的牌是不是小刀（含升级/变体：墨影小刀等）。</summary>
+    public static bool IsShivCard(string className)
+        => className.Contains("Shiv", StringComparison.Ordinal);
 
     /// <summary>伤害随"本回合已打出的攻击牌数"增长的牌。</summary>
     public static bool ScalesWithAttacksPlayed(string className) => className is "Finisher";
@@ -116,6 +144,9 @@ internal static class SilentLogic
         "Speedster" => "能力牌（本回合每抽 1 张牌 → 全体 2 伤）",
         "Shadowmeld" => "本回合格挡翻倍",
         "PhantomBlades" => "本回合第一张小刀 +9",
+        "FanOfKnives" => "小刀改为攻击全体（本回合）",
+        "Expose" => "清除目标格挡并给予易伤",
+        "Sidestep" => "下回合+1能量（本回合无收益）",
         _ => "",
     };
 
@@ -127,6 +158,7 @@ internal static class SilentLogic
         "Nightmare" => "夜魇：复制手牌，未建模",
         "Concoct" => "调制：给队友加毒，未建模",
         "Flanking" => "夹击：多人向效果，未建模",
+        "Fade" => "消影：给队友加敏捷，未建模",
         "Sneaky" => "鬼祟：能力牌，本回合无收益",
         "Tracking" => "跟踪：能力牌，本回合无收益",
         _ => "",

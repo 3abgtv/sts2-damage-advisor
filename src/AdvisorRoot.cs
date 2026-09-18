@@ -54,9 +54,12 @@ public partial class AdvisorRoot : CanvasLayer
         "BladeDance", "Acrobatics", "CloakAndDagger", "DeadlyPoison", "Tactician",
         "Reflex", "HiddenDaggers", "Footwork", "Assassinate", "PiercingWail",
         "Finisher", "Mirage", "StormOfSteel", "GrandFinale",
+        // v0.9.7 修复过、需要实机核对的牌
+        "Sidestep", "DaggerSpray", "Expose", "FanOfKnives", "EscapePlan", "Afterimage",
     };
     private string _signature = "";
     private double _timer;
+    private DateTime _lastErrorLog = DateTime.MinValue;
 
     public void EnsureStarted()
     {
@@ -102,6 +105,37 @@ public partial class AdvisorRoot : CanvasLayer
 
     private void Tick(double delta)
     {
+        try
+        {
+            TickCore(delta);
+        }
+        catch (Exception ex)
+        {
+            // 节点失效/场景切换导致的异常不能让 ProcessFrame 信号把它抛回引擎，
+            // 也不能每帧都写一次日志文件，所以这里限流后只记一笔。
+            try
+            {
+                SetSimple("刷新异常：" + ex.Message);
+            }
+            catch
+            {
+                // 面板节点已经不可用了
+            }
+            if ((DateTime.UtcNow - _lastErrorLog).TotalSeconds > 5)
+            {
+                _lastErrorLog = DateTime.UtcNow;
+                Entry.Log("Tick 异常：" + ex);
+            }
+        }
+    }
+
+    private void TickCore(double delta)
+    {
+        // 场景切换后这个节点可能已经被释放，但信号连接还指向它（旧连接在 Entry.Attach 里已解绑，
+        // 这里再兜一层，避免对已释放对象调方法）。
+        if (!GodotObject.IsInstanceValid(this))
+            return;
+
         EnsureStarted();        TickToggle();
         TickInject();
         TickBudget();
@@ -117,15 +151,7 @@ public partial class AdvisorRoot : CanvasLayer
             return;
         _timer = 0;
 
-        try
-        {
-            Refresh();
-        }
-        catch (Exception ex)
-        {
-            SetSimple("刷新异常：" + ex.Message);
-            Entry.Log("刷新异常：" + ex);
-        }
+        Refresh();
     }
 
     private void BuildUi()
@@ -154,7 +180,7 @@ public partial class AdvisorRoot : CanvasLayer
         box.AddThemeConstantOverride("separation", 3);
         _panel.AddChild(box);
 
-        _header = MakeLabel("伤害顾问 v0.3", 15, new Color(0.70f, 0.92f, 1f));
+        _header = MakeLabel($"伤害顾问 v{Entry.Version}", 15, new Color(0.70f, 0.92f, 1f));
         _status = MakeLabel("-", 13, new Color(0.95f, 0.85f, 0.55f));
         _enemyLine = MakeLabel("-", 12, new Color(0.95f, 0.75f, 0.75f));
         _handLines = MakeLabel("-", 12, new Color(0.9f, 0.9f, 0.95f));
@@ -433,7 +459,7 @@ public partial class AdvisorRoot : CanvasLayer
         }
 
         IReadOnlyList<CardModel> hand = pcs.Hand.Cards;
-        string signature = BuildSignature(state, pcs, hand, enemies);
+        string signature = BuildSignature(state, pcs, myCreature, hand);
         if (signature == _signature)
             return;
         _signature = signature;
@@ -462,12 +488,21 @@ public partial class AdvisorRoot : CanvasLayer
             foreach (CardEffect e in advice.HandEffects)
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
             foreach (SimEnemy se in advice.EnemiesBefore)
-                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} incoming={se.Incoming} | {DamageModel.DescribeIntent(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies)}" + $" | 按我算={DamageModel.IncomingOf(enemies.FirstOrDefault(c => c.Name == se.Name)!, myCreature).Total} 按全队算={DamageModel.IncomingOfAllies(enemies.FirstOrDefault(c => c.Name == se.Name)!, allies).Total} | buff[{DamageModel.DescribePowers(enemies.FirstOrDefault(c => c.Name == se.Name)!)}]");
+            {
+                // ⚠️ 按屏幕编号取怪，不能按名字：同名怪（史莱姆群等）会取错，取不到还会把 null 传下去
+                Creature? foe = se.Index >= 1 && se.Index <= state.Enemies.Count ? state.Enemies[se.Index - 1] : null;
+                string intent = foe is null ? "?" : DamageModel.DescribeIntent(foe, allies);
+                string byMe = foe is null ? "?" : DamageModel.IncomingOf(foe, myCreature).Total.ToString();
+                string byTeam = foe is null ? "?" : DamageModel.IncomingOfAllies(foe, allies).Total.ToString();
+                string buffs = foe is null ? "?" : DamageModel.DescribePowers(foe);
+                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} blk={se.Block} incoming={se.Incoming} | {intent}"
+                          + $" | 按我算={byMe} 按全队算={byTeam} | buff[{buffs}]");
+            }
             Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
         }
 
         if (_header is not null)
-            _header.Text = $"伤害顾问 v0.8  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  {(AdvisorSettings.DamageFirst ? "输出优先" : "保命优先")}  ·  掉血 ≤{AdvisorSettings.HpLossBudget}";
+            _header.Text = $"伤害顾问 v{Entry.Version}  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  {(AdvisorSettings.DamageFirst ? "输出优先" : "保命优先")}  ·  掉血 ≤{AdvisorSettings.HpLossBudget}";
 
         if (_status is not null)
         {
@@ -497,6 +532,8 @@ public partial class AdvisorRoot : CanvasLayer
                 if (e.Dexterity > 0) parts.Add($"+{e.Dexterity}敏捷");
                 if (e.Vulnerable > 0) parts.Add($"易伤{e.Vulnerable}");
                 if (e.StrengthLoss > 0) parts.Add($"敌力量-{e.StrengthLoss}");
+                if (e.RemovesBlock) parts.Add("清格挡");
+                if (e.MakesShivsHitAll) parts.Add("小刀→全体");
                 if (e.Discard > 0) parts.Add($"弃{e.Discard}");
                 if (e.KeywordsText.Length > 0) parts.Add($"[{e.KeywordsText}]");
 
@@ -546,15 +583,23 @@ public partial class AdvisorRoot : CanvasLayer
 
         if (_footer is not null)
         {
-            _footer.Text = $"v0.3 保命优先→最大伤害 · 抽牌按牌堆顺序 · 未计遗物/能力加成的格挡（搜索 {advice.NodesExplored} 节点）";
+            // 伤害数字取自游戏卡面预览值，而预览值是针对"当前主目标"的，这里显式说明按哪只怪算的
+            string sampleNote = advice.EnemiesBefore.Count > 0
+                ? $"伤害按 {advice.EnemiesBefore[0].Index} 号怪的面板值"
+                : "";
+            _footer.Text = $"v{Entry.Version} 保命优先→最大伤害 · 抽牌按牌堆顺序(不洗弃牌堆)"
+                         + (sampleNote.Length > 0 ? $" · {sampleNote}" : "")
+                         + $"（搜索 {advice.NodesExplored} 节点）";
         }
     }
 
-    private static string BuildSignature(CombatState state, PlayerCombatState pcs, IReadOnlyList<CardModel> hand, IReadOnlyList<Creature> enemies)
+    private static string BuildSignature(CombatState state, PlayerCombatState pcs, Creature me, IReadOnlyList<CardModel> hand)
     {
         string cards = string.Join(",", hand.Select(SafeId));
-        string hp = string.Join(",", enemies.Select(e => e.CurrentHp));
-        return $"{state.RoundNumber}|{pcs.TurnNumber}|{pcs.Energy}|{cards}|{hp}";
+        // 敌人格挡也要进指纹：它会让整轮输出被吃光，只比血量会漏掉"格挡变了但血没变"的情况
+        string foes = string.Join(",", state.Enemies.Select(e => $"{e.CurrentHp}/{e.Block}"));
+        return $"{state.RoundNumber}|{pcs.TurnNumber}|{pcs.Energy}|{pcs.DrawPile.Cards.Count}"
+             + $"|{me.CurrentHp}|{me.Block}|{cards}|{foes}";
     }
 
     private static string SafeId(CardModel card)

@@ -26,6 +26,8 @@ internal sealed class CardEffect
 {
     public required string Name { get; init; }
     public string Id { get; init; } = "";
+    /// <summary>模型类名（语义分发用：BladeDance / Acrobatics / Shiv …）。</summary>
+    public string ClassName { get; init; } = "";
     public required int Cost { get; init; }
     public decimal Damage { get; init; }
     public bool HitsAll { get; init; }
@@ -92,6 +94,18 @@ internal sealed class CardEffect
 
     public ScalingKind Scaling { get; init; }
 
+    /// <summary>
+    /// Scaling=AttacksPlayed 时，"游戏预览里已经算进去的次数"（含这张牌自己）。
+    /// 终结技的卡面会显示"（攻击 N 次）"，N 就是它，所以本回合之前已经出过的攻击牌不会被漏掉。
+    /// </summary>
+    public int ScalingBaseHits { get; init; } = 1;
+
+    /// <summary>打出时清除目标身上全部格挡（暴露）。</summary>
+    public bool RemovesBlock { get; init; }
+
+    /// <summary>打出后本回合所有小刀改为攻击全体（刀扇）。</summary>
+    public bool MakesShivsHitAll { get; init; }
+
 
 
     /// <summary>词条显示文本（消耗/保留/固有/奇巧/虚无/不可打出）。</summary>
@@ -126,6 +140,12 @@ internal sealed class SimEnemy
     /// <summary>意图攻击段数（用于力量削减）。</summary>
     public required int Hits { get; init; }
     public int Weak { get; set; }
+
+    /// <summary>
+    /// 本回合才被我们上的虚弱。⚠️ 意图伤害（GetSingleDamage）本身已经算进了敌人"当前"的虚弱，
+    /// 所以只有"原本不虚弱、本回合被我们打上虚弱"时才在这里再乘一次，否则会重复减伤。
+    /// </summary>
+    public int WeakThisTurn { get; set; }
     public int Vulnerable { get; set; }
     public int StrengthLoss { get; set; }
     public int Poison { get; set; }
@@ -140,7 +160,7 @@ internal sealed class SimEnemy
         get
         {
             int damage = Math.Max(0, BaseIncoming - StrengthLoss * Math.Max(1, Hits));
-            if (Weak > 0)
+            if (WeakThisTurn > 0)
                 damage = damage * 3 / 4;
             return damage;
         }
@@ -158,6 +178,7 @@ internal sealed class SimEnemy
         BaseIncoming = BaseIncoming,
         Hits = Hits,
         Weak = Weak,
+        WeakThisTurn = WeakThisTurn,
         Vulnerable = Vulnerable,
         StrengthLoss = StrengthLoss,
         Poison = Poison,
@@ -200,7 +221,6 @@ internal sealed class TurnAdvice
     public required int CurrentHp { get; init; }
     public required int NodesExplored { get; init; }
     public required IReadOnlyList<CardEffect> HandEffects { get; init; }
-    public required bool ShivBlocked { get; init; }
 }
 
 /// <summary>
@@ -248,6 +268,12 @@ internal static class DamageModel
                 Poison = ReadPower<PoisonPower>(c),
 
 
+                // 虚弱只用于显示/去重：意图伤害里已经算过"当前虚弱"，本回合新上的虚弱走 WeakThisTurn
+
+
+                Weak = ReadPower<WeakPower>(c),
+
+
                 PowersText = DescribePowers(c),
             });
         }
@@ -255,25 +281,27 @@ internal static class DamageModel
         Creature? sample = enemiesInOrder.FirstOrDefault(e => e.IsAlive);
         int strength = ReadPower<StrengthPower>(me);
         int accuracy = ReadPower<AccuracyPower>(me);
-        int attacksPlayed = 0; // 本回合已打出的攻击牌数由调用方传入更准，这里从 0 起
 
         var analyzeContext = new AnalyzeContext
         {
             Target = sample,
             Enemies = enemies,
-            HandSize = hand.Count,
-            AttacksPlayedThisTurn = attacksPlayed,
-            ShivDamage = BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0),
             DrawPileCount = drawPile.Count,
-            ShivBlocked = false,
         };
 
         List<CardEffect> handEffects = hand.Select(c => Analyze(c, analyzeContext)).ToList();
         List<CardEffect> drawEffects = drawPile.Select(c => Analyze(c, analyzeContext)).ToList();
 
+        // 生成小刀的伤害优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱以及缩小之类的全局修正），
+        // 手上和抽牌堆里都没有小刀时才退回手算公式。
+        decimal? shivPreview = FindShivDamage(handEffects, drawEffects);
+        decimal shivDamage = shivPreview
+            ?? BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0);
+
         var context = new SearchContext
         {
-            Shiv = BuildShivEffect(sample, BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0)),
+            Shiv = BuildShivEffect(shivDamage, false),
+            ShivAll = BuildShivEffect(shivDamage, true),
             CurrentBlock = currentBlock,
             CurrentHp = currentHp,
             EnemiesBefore = enemies,
@@ -296,19 +324,25 @@ internal static class DamageModel
             CurrentHp = currentHp,
             NodesExplored = context.Nodes,
             HandEffects = handEffects,
-            ShivBlocked = false,
         };
+    }
+
+    /// <summary>场上/抽牌堆里第一张真实小刀的伤害（游戏预览值）。</summary>
+    private static decimal? FindShivDamage(IEnumerable<CardEffect> handEffects, IEnumerable<CardEffect> drawEffects)
+    {
+        foreach (CardEffect effect in handEffects.Concat(drawEffects))
+        {
+            if (effect.Supported && effect.Damage > 0m && SilentLogic.IsShivCard(effect.ClassName))
+                return effect.Damage;
+        }
+        return null;
     }
 
     private sealed class AnalyzeContext
     {
         public Creature? Target { get; init; }
         public required IReadOnlyList<SimEnemy> Enemies { get; init; }
-        public required int HandSize { get; init; }
-        public required int AttacksPlayedThisTurn { get; init; }
-        public required decimal ShivDamage { get; init; }
         public required int DrawPileCount { get; init; }
-        public required bool ShivBlocked { get; init; }
     }
 
     private sealed class SearchState
@@ -329,6 +363,8 @@ internal static class DamageModel
         public bool DoubleBlock { get; set; }
         public int FirstShivBonus { get; set; }
         public bool FirstShivBonusUsed { get; set; }
+        /// <summary>本回合打出过刀扇后，小刀改为攻击全体。</summary>
+        public bool ShivsHitAll { get; set; }
         public List<CardEffect> Hand { get; init; } = new();
         public Queue<CardEffect> Draw { get; init; } = new();
         public List<SimEnemy> Enemies { get; init; } = new();
@@ -344,6 +380,8 @@ internal static class DamageModel
     private sealed class SearchContext
     {
         public required CardEffect Shiv { get; init; }
+        /// <summary>刀扇打出后用的小刀模板（攻击全体）。</summary>
+        public required CardEffect ShivAll { get; init; }
         public required int CurrentBlock { get; init; }
         public required int CurrentHp { get; init; }
         public required List<SimEnemy> EnemiesBefore { get; init; }
@@ -359,7 +397,7 @@ internal static class DamageModel
         public void Dfs(SearchState state, int depth)
         {
             string key = BuildStateKey(state);
-            if (_visited.Count < 100000 && !_visited.Add(key))
+            if (!_visited.Add(key))
                 return;
 
             Nodes++;
@@ -434,14 +472,17 @@ internal static class DamageModel
                 DoubleBlock = state.DoubleBlock || card.DoubleBlock,
                 FirstShivBonus = state.FirstShivBonus + card.FirstShivBonus,
                 FirstShivBonusUsed = state.FirstShivBonusUsed,
+                ShivsHitAll = state.ShivsHitAll || card.MakesShivsHitAll,
                 Hand = new List<CardEffect>(state.Hand),
                 Draw = new Queue<CardEffect>(state.Draw),
                 Enemies = state.Enemies.Select(e => e.Clone()).ToList(),
                 Actions = new List<PlannedAction>(state.Actions),
                 Damage = state.Damage,
+                // 格挡 = 卡面格挡(+敏捷) + 余像"每张牌 N 格挡"，本回合这些都属于"获得的格挡"，融入暗影时一起翻倍。
+                // ⚠️ 余像那一项以前被写成 `card.Block > 0 ? 0 : ...`，导致出格挡牌时不加，这里必须无条件计入。
                 Block = state.Block
-                            + (BlockGain(card, state) + (card.Block > 0 ? state.Dex : 0)) * (state.DoubleBlock || card.DoubleBlock ? 2 : 1)
-                        + (card.Block > 0 ? 0 : state.BlockPerCard),
+                            + (BlockGain(card, state) + (card.Block > 0 ? state.Dex : 0) + state.BlockPerCard)
+                              * (state.DoubleBlock || card.DoubleBlock ? 2 : 1),
                 EnergySpent = state.EnergySpent + effectiveCost,
                 EnergyGained = state.EnergyGained + card.EnergyGain,
             };
@@ -462,10 +503,11 @@ internal static class DamageModel
                 case ScalingKind.AttacksPlayed:
 
 
-                    // 终结技：含自身在内，本回合已打出的攻击牌数
+                    // 终结技：含自身在内，本回合已打出的攻击牌数。
+                    // 基数取游戏卡面上"（攻击 N 次）"的 N，这样本回合之前已经出过的攻击牌不会被漏掉。
 
 
-                    damage = played.Damage * Math.Max(1, state.AttacksPlayed + 1);
+                    damage = played.Damage * (played.ScalingBaseHits + state.AttacksPlayed);
 
 
                     break;
@@ -490,7 +532,7 @@ internal static class DamageModel
             if (played.DamagePerDiscard > 0 && next.DiscardedThisTurn > 0)
 
                 damage += played.DamagePerDiscard * next.DiscardedThisTurn;
-            if (played.Id.Contains("SHIV", StringComparison.OrdinalIgnoreCase))
+            if (SilentLogic.IsShivCard(played.ClassName))
             {
                 damage += next.ShivBonus;
                 if (!next.FirstShivBonusUsed && next.FirstShivBonus > 0)
@@ -498,6 +540,20 @@ internal static class DamageModel
                     damage += next.FirstShivBonus;
                     next.FirstShivBonusUsed = true;
                 }
+            }
+
+            // 暴露这类"先清格挡再结算"的牌：清完格挡，后面的伤害/易伤才不会被格挡吃掉
+            if (played.RemovesBlock)
+            {
+                foreach (SimEnemy victim in next.Enemies.Where(e => e.Alive && (played.HitsAll || e.Index == targetIndex)))
+                    victim.Block = 0;
+            }
+
+            // 刀扇：本回合剩下的（手牌 + 抽牌堆里的）小刀都改打全体
+            if (played.MakesShivsHitAll)
+            {
+                for (int i = 0; i < next.Hand.Count; i++)
+                    next.Hand[i] = NormalizeShiv(next, next.Hand[i]);
             }
 
             if (damage > 0)
@@ -536,9 +592,18 @@ internal static class DamageModel
                 if (played.Poison > 0)
                     debuffTarget.Poison += played.Poison;
                 if (played.Weak > 0)
+                {
+                    // 只有"原本不虚弱"的敌人才会因为本回合的虚弱额外减伤（意图伤害里已含它当前的虚弱）
+                    if (debuffTarget.Weak == 0)
+                        debuffTarget.WeakThisTurn += played.Weak;
                     debuffTarget.Weak += played.Weak;
+                }
                 if (played.IsXCost && played.WeakPerX > 0)
+                {
+                    if (debuffTarget.Weak == 0)
+                        debuffTarget.WeakThisTurn += played.WeakPerX * effectiveCost;
                     debuffTarget.Weak += played.WeakPerX * effectiveCost;
+                }
                 if (played.Vulnerable > 0)
                 {
                     debuffTarget.Vulnerable += played.Vulnerable;
@@ -574,13 +639,13 @@ internal static class DamageModel
                 foreach (CardEffect dc in discardedAll)
                 {
                     next.DiscardedThisTurn++;
-                    ApplyDiscardTrigger(next, dc, Shiv);
+                    ApplyDiscardTrigger(next, dc);
                 }
 
                 if (played.DiscardHandForShivs)
                 {
                     for (int s = 0; s < discardedAll.Count; s++)
-                        next.Hand.Add(Shiv);
+                        next.Hand.Add(NormalizeShiv(next, Shiv));
                 }
                 else if (played.DiscardHandForDraw)
                 {
@@ -596,7 +661,7 @@ internal static class DamageModel
                 CardEffect discarded = next.Hand[pick];
                 next.Hand.RemoveAt(pick);
                 next.DiscardedThisTurn++;
-                ApplyDiscardTrigger(next, discarded, Shiv);
+                ApplyDiscardTrigger(next, discarded);
             }
 
             // 抽牌（子弹时间后本回合不能再抽）
@@ -605,7 +670,9 @@ internal static class DamageModel
 
             // 生成小刀
             for (int s = 0; s < played.Shivs; s++)
-                next.Hand.Add(Shiv);            // 群蛇形态：每打出一张牌对随机一名敌人造成伤害（这里按残血最少的目标近似）
+                next.Hand.Add(NormalizeShiv(next, Shiv));
+
+            // 群蛇形态：每打出一张牌对随机一名敌人造成伤害（这里按残血最少的目标近似）
             if (state.DamagePerCardPlayed > 0)
             {
                 SimEnemy? victim = next.Enemies.Where(e => e.Alive).OrderBy(e => e.Hp).FirstOrDefault();
@@ -657,7 +724,7 @@ internal static class DamageModel
         /// 被弃触发：奇巧（Sly）牌会**自动打出**（不花能量）。
         /// 战术大师给能量、本能反应抽牌都属于这一类，这里统一按"自动打出"处理。
         /// </summary>
-        private static void ApplyDiscardTrigger(SearchState state, CardEffect discarded, CardEffect shivTemplate)
+        private void ApplyDiscardTrigger(SearchState state, CardEffect discarded)
         {
             if (!discarded.IsSly)
                 return;
@@ -686,7 +753,11 @@ internal static class DamageModel
                 if (discarded.Poison > 0)
                     target.Poison += discarded.Poison;
                 if (discarded.Weak > 0)
+                {
+                    if (target.Weak == 0)
+                        target.WeakThisTurn += discarded.Weak;
                     target.Weak += discarded.Weak;
+                }
                 if (discarded.Vulnerable > 0)
                 {
                     target.Vulnerable += discarded.Vulnerable;
@@ -702,16 +773,24 @@ internal static class DamageModel
             if (discarded.Shivs > 0)
             {
                 for (int s = 0; s < discarded.Shivs; s++)
-                    state.Hand.Add(shivTemplate);
+                    state.Hand.Add(NormalizeShiv(state, Shiv));
             }
         }
 
+        /// <summary>
+        /// 取当前应当使用的小刀模板：打过刀扇之后是"攻击全体"的版本。
+        /// 生成的小刀、从抽牌堆翻出来的小刀都要走这里，否则刀扇之后的伤害会被按单体算。
+        /// </summary>
+        private CardEffect NormalizeShiv(SearchState state, CardEffect shiv)
+            => state.ShivsHitAll && SilentLogic.IsShivCard(shiv.ClassName) ? ShivAll : shiv;
+
         /// <summary>抽牌（含腐蚀波/速行者的抽牌副作用）。</summary>
-        private static void HandleDraws(SearchState state, int count)
+        private void HandleDraws(SearchState state, int count)
         {
             for (int d = 0; d < count && state.Draw.Count > 0; d++)
             {
-                state.Hand.Add(state.Draw.Dequeue());
+                // 翻出来的小刀也要过一遍模板（刀扇之后应该是打全体的那版）
+                state.Hand.Add(NormalizeShiv(state, state.Draw.Dequeue()));
 
                 if (state.PoisonPerDraw > 0)
                 {
@@ -765,14 +844,16 @@ internal static class DamageModel
                 return;
             target.Hp -= dealt;
             state.Damage += dealt;
-        }        /// <summary>状态指纹：能量/格挡/敏捷/弃牌数/各类标记 + 手牌 + 抽牌堆 + 敌人状态。</summary>
+        }        /// <summary>状态指纹：能量/格挡/敏捷/弃牌数/本回合已出攻击数/各类标记 + 手牌 + 抽牌堆 + 敌人状态。</summary>
         private static string BuildStateKey(SearchState state)
         {
             var sb = new System.Text.StringBuilder(128);
             sb.Append(state.Energy).Append('|').Append(state.Block).Append('|').Append(state.Dex).Append('|')
               .Append(state.DiscardedThisTurn).Append('|')
+              // ⚠️ 已出攻击数必须进指纹：终结技的伤害直接取决于它，漏掉会让"攒攻击数再打终结技"的分支被剪掉
+              .Append(state.AttacksPlayed).Append('|')
               .Append(state.HandFree ? 1 : 0).Append(state.NoDraw ? 1 : 0).Append(state.DoubleBlock ? 1 : 0)
-              .Append(state.FirstShivBonusUsed ? 1 : 0)
+              .Append(state.FirstShivBonusUsed ? 1 : 0).Append(state.ShivsHitAll ? 1 : 0)
               .Append('|').Append(state.ShivBonus).Append('|').Append(state.BlockPerCard).Append('|')
               .Append(state.Envenom).Append('|').Append(state.PoisonPerDraw).Append('|')
               .Append(state.DamagePerCardPlayed).Append('|').Append(state.DamagePerDraw).Append('|')
@@ -788,7 +869,8 @@ internal static class DamageModel
             sb.Append('|');
             foreach (SimEnemy e in state.Enemies.OrderBy(x => x.Index))
                 sb.Append(e.Index).Append(':').Append(e.Hp).Append(':').Append(e.Block).Append(':')
-                  .Append(e.Poison).Append(':').Append(e.Weak).Append(':').Append(e.Vulnerable)
+                  .Append(e.Poison).Append(':').Append(e.Weak).Append(':').Append(e.WeakThisTurn)
+                  .Append(':').Append(e.Vulnerable).Append(':').Append(e.VulnerableThisTurn)
                   .Append(':').Append(e.StrengthLoss).Append(',');
 
             return sb.ToString();
@@ -1015,7 +1097,8 @@ internal static class DamageModel
         if (card.Type == CardType.Attack || SilentLogic.ScalesWithAttacksPlayed(className) || SilentLogic.ScalesWithSkillsInHand(className))
         {
             decimal perHit = target is null ? 0m : EstimateDamage(card, target);
-            hits = HitCount(card);
+            // 描述里写死的段数（匕首雨"两次"）也要乘进来，否则伤害只有一半
+            hits = HitCount(card) * SilentLogic.HardcodedHits(className);
 
             // 终结技/飞镖：这里的 Damage 是"每次"的伤害，次数在出牌时按状态计算
             if (scaling != ScalingKind.None)
@@ -1024,11 +1107,17 @@ internal static class DamageModel
             damage = perHit * hits;
         }
 
+        // 终结技的基数取游戏卡面上"（攻击 N 次）"的 N（含自身），这样本回合先前出过的攻击牌不会漏
+        int scalingBaseHits = 1;
+        if (scaling == ScalingKind.AttacksPlayed)
+            scalingBaseHits = Math.Max(1, (int)Math.Floor(ReadPreview(card, "CalculatedHits")));
+
         // 格挡
         int block = ReadByType(card, v => v is BlockVar) ?? ReadInt(card, "Block");
         if (SilentLogic.BlockFromEnemyPoison(className) && context is not null)
         {
-            block = context.Enemies.Sum(e => e.Poison);
+            // 只算存活敌人；搜索内部每次出牌都会实时重算（见 BlockGain）
+            block = context.Enemies.Where(e => e.Alive).Sum(e => e.Poison);
             note = "格挡=敌人中毒总和";
         }
 
@@ -1043,7 +1132,10 @@ internal static class DamageModel
         int weak = ReadByType(card, v => v is PowerVar<WeakPower>) ?? ReadInt(card, "WeakPower");
         int vulnerable = ReadByType(card, v => v is PowerVar<VulnerablePower>) ?? ReadInt(card, "VulnerablePower");
         int strengthLoss = ReadInt(card, "StrengthLoss");
-        int energyGain = ReadByType(card, v => v is EnergyVar) ?? ReadInt(card, "Energy");
+        // 侧步这类"下回合 +能量"的牌，变量同样叫 Energy，但本回合拿不到，不能算进搜索
+        int energyGain = SilentLogic.GainsEnergyNextTurn(className)
+            ? 0
+            : ReadByType(card, v => v is EnergyVar) ?? ReadInt(card, "Energy");
         int dexterity = ReadByType(card, v => v is PowerVar<DexterityPower>) ?? ReadInt(card, "DexterityPower");
 
         // Cards 变量：抽牌 or 生成小刀（逐张表）
@@ -1065,9 +1157,8 @@ internal static class DamageModel
         if (shivsVar > 0 && SilentLogic.ShivsFromShivsVar(className))
             shivs += shivsVar;
 
-        // 固定抽牌
-        if (className == "DaggerThrow")
-            draw = Math.Max(draw, 1);
+        // 固定抽牌（描述里写死、没有 Cards 变量的牌）
+        draw = Math.Max(draw, SilentLogic.FixedDraw(className));
 
         // 弃牌
         int discard = SilentLogic.FixedDiscard(className);
@@ -1111,6 +1202,8 @@ internal static class DamageModel
         int damagePerDiscard = className == "MementoMori" ? ReadInt(card, "ExtraDamage") : 0;
 
         bool triggersPoisonNow = className == "Outbreak";
+        bool removesBlock = SilentLogic.RemovesEnemyBlock(className);
+        bool makesShivsHitAll = SilentLogic.MakesShivsHitAll(className);
         if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
             vulnerable = ReadInt(card, "Power");
         string powerNote = SilentLogic.ImmediatePowerNote(className);
@@ -1143,7 +1236,7 @@ internal static class DamageModel
             || envenom != 0 || poisonPerDraw != 0 || damagePerCardPlayed != 0 || damagePerDraw != 0
 
 
-            || doubleBlock || firstShivBonus != 0;
+            || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll;
 
 
 
@@ -1182,6 +1275,7 @@ internal static class DamageModel
         {
             Name = name,
             Id = SafeId(card),
+            ClassName = className,
             Cost = cost,
             Damage = damage,
             HitsAll = hitsAll,
@@ -1221,6 +1315,9 @@ internal static class DamageModel
             IsAttack = card.Type == CardType.Attack,
             IsSkill = card.Type == CardType.Skill,
             Scaling = scaling,
+            ScalingBaseHits = scalingBaseHits,
+            RemovesBlock = removesBlock,
+            MakesShivsHitAll = makesShivsHitAll,
 
 
 
@@ -1230,8 +1327,6 @@ internal static class DamageModel
             Source = card,
         };
     }
-
-    private static int CountSkillsInHand(AnalyzeContext? context) => Math.Max(1, context?.HandSize ?? 1);
 
     /// <summary>
     /// 单只怪本回合打到"我"身上的意图伤害。
@@ -1291,7 +1386,11 @@ internal static class DamageModel
         return Math.Max(0m, Math.Floor(shiv));
     }
 
-    private static CardEffect BuildShivEffect(Creature? target, decimal shivDamage)
+    /// <summary>
+    /// 生成小刀的模板。hitsAll=true 是"刀扇之后"的版本（攻击全体），
+    /// Id 加后缀是为了让状态指纹把两种小刀区分开。
+    /// </summary>
+    private static CardEffect BuildShivEffect(decimal shivDamage, bool hitsAll)
     {
         try
         {
@@ -1299,22 +1398,48 @@ internal static class DamageModel
             return new CardEffect
             {
                 Name = SafeName(canonical),
-                Id = SafeId(canonical),
+                Id = SafeId(canonical) + (hitsAll ? "_AOE" : ""),
+                ClassName = "Shiv",
                 Cost = canonical.EnergyCost?.Canonical ?? 0,
                 Damage = shivDamage,
+                HitsAll = hitsAll,
                 Supported = true,
-                Note = "小刀",
+                Note = hitsAll ? "小刀（打全体）" : "小刀",
                 Source = canonical,
             };
         }
         catch
         {
-            return new CardEffect { Name = "小刀", Id = "SHIV", Cost = 0, Damage = 4m, Supported = true, Note = "小刀" };
+            return new CardEffect
+            {
+                Name = "小刀",
+                Id = hitsAll ? "SHIV_AOE" : "SHIV",
+                ClassName = "Shiv",
+                Cost = 0,
+                Damage = 4m,
+                HitsAll = hitsAll,
+                Supported = true,
+                Note = hitsAll ? "小刀（打全体）" : "小刀",
+            };
         }
     }
 
-    private static decimal EstimateDamage(CardModel card, Creature target)
+    /// <summary>读某个变量的"卡面预览值"（终结技的 CalculatedHits 用它取本回合已出攻击数）。</summary>
+    private static decimal ReadPreview(CardModel card, string key)
     {
+        try
+        {
+            return card.DynamicVars.TryGetValue(key, out DynamicVar? variable) && variable is not null
+                ? variable.PreviewValue
+                : 0m;
+        }
+        catch
+        {
+            return 0m;
+        }
+    }
+
+    private static decimal EstimateDamage(CardModel card, Creature target)    {
         try
         {
             // 精确切击/谋杀/铭记死亡这类计算型伤害放在 CalculatedDamage 里

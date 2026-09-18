@@ -23,9 +23,10 @@ namespace DamageAdvisor;
 public static class Entry
 {
     public const string Tag = "[DamageAdvisor]";
-    public const string Version = "0.9.6";
+    public const string Version = "0.9.7";
 
     private static AdvisorRoot? _node;
+    private static SceneTree? _tree;
 
     public static void Initialize()
     {
@@ -191,6 +192,20 @@ public static class Entry
             if (_node is not null && GodotObject.IsInstanceValid(_node))
                 return;
 
+            // 旧节点已被场景切换释放：先把它的每帧回调摘掉。
+            // 不然 ProcessFrame 信号会一直调到失效对象上（_panel 已释放 → 每帧抛异常）。
+            if (_node is not null && _tree is not null)
+            {
+                try
+                {
+                    _tree.ProcessFrame -= _node.TickFromSignal;
+                }
+                catch
+                {
+                    // 树也没了就算了
+                }
+            }
+
             NGame? host = NGame.Instance;
             if (host is null)
             {
@@ -203,9 +218,10 @@ public static class Entry
 
             // 不依赖 Godot 虚函数派发：显式建 UI，并用 process_frame 信号驱动刷新
             _node.EnsureStarted();
-            if (host.GetTree() is { } tree)
+            _tree = host.GetTree();
+            if (_tree is not null)
             {
-                tree.ProcessFrame += _node.TickFromSignal;
+                _tree.ProcessFrame += _node.TickFromSignal;
                 Log("已连接 SceneTree.ProcessFrame 信号");
             }
             else
