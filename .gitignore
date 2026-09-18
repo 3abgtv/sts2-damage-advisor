@@ -8,3 +8,5 @@ shots/
 *.cfg
 # 游戏卡池转储（含游戏内文本，不随仓库分发）
 docs/silent-pool.txt
+# 本地 agent 配置（.claude/skills 是指向 .agents/skills 的目录联接，各机器自建）
+.claude/
