@@ -23,7 +23,7 @@ namespace DamageAdvisor;
 public static class Entry
 {
     public const string Tag = "[DamageAdvisor]";
-    public const string Version = "0.9.8";
+    public const string Version = "0.9.9";
 
     /// <summary>
     /// 工坊构建自动带 -ws 后缀（见 csproj 的 Workshop 开关），

@@ -1112,8 +1112,9 @@ internal static class DamageModel
         if (scaling == ScalingKind.AttacksPlayed)
             scalingBaseHits = Math.Max(1, (int)Math.Floor(ReadPreview(card, "CalculatedHits")));
 
-        // 格挡
-        int block = ReadByType(card, v => v is BlockVar) ?? ReadInt(card, "Block");
+        // 格挡：取卡面预览值（含敏捷/遗物等修正）。取基础值会让"本场已有的敏捷"整个漏掉，
+        // 导致格挡低估、预计掉血偏悲观、多推荐一张防御牌。
+        int block = ReadPreviewByType(card, v => v is BlockVar) ?? (int)Math.Floor(ReadPreview(card, "Block"));
         if (SilentLogic.BlockFromEnemyPoison(className) && context is not null)
         {
             // 只算存活敌人；搜索内部每次出牌都会实时重算（见 BlockGain）
@@ -1474,6 +1475,31 @@ internal static class DamageModel
 
     private static int HitCount(CardModel card)
         => Math.Max(1, ReadByType(card, v => v is RepeatVar) ?? ReadIntAny(card, "Repeat", "Repeats"));
+
+    /// <summary>
+    /// 按类型取变量的**卡面预览值**（含敏捷/遗物等修正），取不到退回基础值。
+    /// ⚠️ 与 ReadByType 的区别：那个取 IntValue（基础值），格挡用它会把"本场已有的敏捷"整个漏掉
+    /// （实测：防御 面板 5 / 游戏 7~10，差额正是敏捷）。本回合新获得的敏捷仍由 state.Dex 动态叠加，不会重复算。
+    /// </summary>
+    private static int? ReadPreviewByType(CardModel card, Func<DynamicVar, bool> match)
+    {
+        try
+        {
+            foreach (KeyValuePair<string, DynamicVar> pair in card.DynamicVars)
+            {
+                if (match(pair.Value))
+                {
+                    decimal value = pair.Value.PreviewValue > 0 ? pair.Value.PreviewValue : pair.Value.BaseValue;
+                    return (int)Math.Floor(value);
+                }
+            }
+        }
+        catch
+        {
+            // 忽略
+        }
+        return null;
+    }
 
     private static int? ReadByType(CardModel card, Func<DynamicVar, bool> match)
     {
