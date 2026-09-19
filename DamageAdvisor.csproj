@@ -11,6 +11,15 @@
     <GameDir Condition="'$(GameDir)' == ''">D:\SteamLibrary\steamapps\common\Slay the Spire 2</GameDir>
     <ManagedDir>$(GameDir)\data_sts2_windows_x86_64</ManagedDir>
   </PropertyGroup>
+  <!--
+    工坊发布版：dotnet build -p:Workshop=true
+    编译期剔除 F9 注入测试牌与卡池转储（源码里是 #if !WORKSHOP），
+    所以 DLL 里根本不存在这些能力，affects_gameplay:false 才名副其实。
+  -->
+  <PropertyGroup Condition="'$(Workshop)' == 'true'">
+    <DefineConstants>$(DefineConstants);WORKSHOP</DefineConstants>
+    <AssemblyTitle>DamageAdvisor (workshop build)</AssemblyTitle>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="src\**\*.cs" />
   </ItemGroup>

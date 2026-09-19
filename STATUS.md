@@ -1,5 +1,39 @@
 # DamageAdvisor 进度与状态
 
+## v0.9.8（已编译）— 创意工坊发布准备：测试功能编译期分离 + 打包
+
+为发布到 Steam 创意工坊（AppID **2868840**，官方 `ModUploader`）做准备，核心是把"开发方便"与"给玩家干净"分开。
+
+### 编译期分离：一份源码，两种产物
+
+`DamageAdvisor.csproj` 新增 `-p:Workshop=true` 开关（注入编译常量 `WORKSHOP`）：
+
+| | 开发版（默认构建） | 工坊版（`-p:Workshop=true`） |
+|---|---|---|
+| F9 注入测试牌（`TestCards`/`TickInject`/`InjectNextTestCard`/`InjectAsync`） | 有 | **编译期不存在** |
+| 卡池转储（`Entry.DumpSilentPoolOnce`） | 有 | **编译期不存在** |
+| 面板提示里的"F9 注入" | 有 | 无 |
+| 版本号 | `0.9.8` | `0.9.8-ws`（`Entry.DisplayVersion` 自动拼） |
+
+实测校验（按 ASCII 与 UTF-16LE 两种堆查 DLL 字节）：开发版含 `InjectNextTestCard`/`TestCards`/`DumpSilentPool`、无 `0.9.8-ws`；工坊版全部相反。产物 76 KB → 70 KB。
+
+这样 `DamageAdvisor.json` 的 `affects_gameplay: false` 在工坊版里才**名副其实**——F9 注入会真实修改本地战斗状态（联机时已自动拒绝），发到工坊属于性质问题，不只是措辞问题。
+
+### 打包与发布
+
+- 新增 `workshop/` 工作区（官方 `ModUploader` 格式）：`workshop.json` + `image.png` + `content/`（构建产物，已 gitignore）。
+- `build.ps1 -Workshop`：编译 → **校验产物身份**（检出注入/转储代码或缺少 `<版本>-ws` 就报错）→ 填充 `content/`（DLL + json + LICENSE）→ 打印上传命令。开发版那条路径也加了反查：万一增量构建没重编、把工坊版 DLL 部署进 `mods/`，直接报错拦住。
+- 新增 **MIT `LICENSE`**，并随包放进 `content/` —— MIT 要求"版权声明随许可声明随副本附带"，而工坊分发的就是 `content/` 里那几份文件。
+- 工坊首发用 `unlisted`（发直链给少数人验证），通过后转 `public`；tags 用官方保留给工具类的 `Tools & APIs`；`minBranch`/`maxBranch` 留空。
+
+### 踩到的两个 PowerShell 坑（已写进 deploy-and-release skill）
+
+- `.ps1` 必须存成**带 BOM 的 UTF-8**：Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，中文注释里的字节会把引号吃掉 → 语法错误。
+- `Get-Content -Raw` 读 `DamageAdvisor.json` 会因同样的编码问题读坏、`ConvertFrom-Json` 抛异常；改用 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)`。
+
+> 验证状态：编译与产物校验已完成（0 warning / 0 error，两产物差异实测确认）；**工坊上传、工坊版实机加载仍未验证**。
+> 另：v0.9.7 那 6 张牌（侧步/匕首雨/暴露/刀扇/逃脱计划/终结技）仍待实机核对。
+
 ## v0.9.7（已编译，待实机验证）— 按"卡池转储 + 实战日志"逐张复核后的 12 处修复
 
 > 验证状态：`dotnet build` 0 warning / 0 error，产物已部署到 `mods/DamageAdvisor`。

@@ -10,3 +10,5 @@ shots/
 docs/silent-pool.txt
 # 本地 agent 配置（.claude/skills 是指向 .agents/skills 的目录联接，各机器自建）
 .claude/
+# 工坊上传内容由 build.ps1 -Workshop 填充（构建产物），工作区其余文件照常跟踪
+workshop/content/

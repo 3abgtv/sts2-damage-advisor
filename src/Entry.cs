@@ -23,7 +23,20 @@ namespace DamageAdvisor;
 public static class Entry
 {
     public const string Tag = "[DamageAdvisor]";
-    public const string Version = "0.9.7";
+    public const string Version = "0.9.8";
+
+    /// <summary>
+    /// 工坊构建自动带 -ws 后缀（见 csproj 的 Workshop 开关），
+    /// 这样面板标题、日志和 DLL 里都能一眼看出装的是哪个产物。
+    /// </summary>
+#if WORKSHOP
+    public const string BuildTag = "-ws";
+#else
+    public const string BuildTag = "";
+#endif
+
+    /// <summary>对外显示用（含构建后缀）。</summary>
+    public static string DisplayVersion => Version + BuildTag;
 
     private static AdvisorRoot? _node;
     private static SceneTree? _tree;
@@ -32,7 +45,7 @@ public static class Entry
     {
         try
         {
-            Log($"初始化开始 v{Version}");
+            Log($"初始化开始 v{DisplayVersion}");
             InstallGameReadyHook();
 
             // 兜底：真正开打时再挂一次，确保一定能挂上
@@ -48,6 +61,7 @@ public static class Entry
         }
     }
 
+#if !WORKSHOP
     private static bool _poolDumped;
 
     /// <summary>第一场战斗时再转储（初始化时 ModelDb 还没建好）。</summary>
@@ -158,6 +172,7 @@ public static class Entry
             return "?";
         }
     }
+#endif
 
     private static void InstallGameReadyHook()
     {

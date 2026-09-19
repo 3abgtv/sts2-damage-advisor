@@ -34,7 +34,9 @@ public partial class AdvisorRoot : CanvasLayer
     private int _handDumpCount;
     private bool _showPanel = true;
     private bool _previousToggleKey;
+#if !WORKSHOP
     private bool _previousInjectKey;
+#endif
     private bool _previousBudgetKey;
     private bool _previousCollapseKey;
 
@@ -45,9 +47,19 @@ public partial class AdvisorRoot : CanvasLayer
 
     private double _settingsTimer;
 
-    private DateTime _lastCfgWrite;
-    private int _injectIndex;
+    /// <summary>按键提示里的"F9 注入"只在开发版出现（工坊版编译期就没有这个功能）。</summary>
+#if WORKSHOP
+    private const string InjectHint = "";
+#else
+    private const string InjectHint = " · F9 注入";
+#endif
 
+    private DateTime _lastCfgWrite;
+#if !WORKSHOP
+    private int _injectIndex;
+#endif
+
+#if !WORKSHOP
     /// <summary>F9 依次注入的测试牌（用来验证猎人牌效，不用等抽牌）。</summary>
     private static readonly string[] TestCards =
     {
@@ -57,6 +69,7 @@ public partial class AdvisorRoot : CanvasLayer
         // v0.9.7 修复过、需要实机核对的牌
         "Sidestep", "DaggerSpray", "Expose", "FanOfKnives", "EscapePlan", "Afterimage",
     };
+#endif
     private string _signature = "";
     private double _timer;
     private DateTime _lastErrorLog = DateTime.MinValue;
@@ -137,7 +150,9 @@ public partial class AdvisorRoot : CanvasLayer
             return;
 
         EnsureStarted();        TickToggle();
+#if !WORKSHOP
         TickInject();
+#endif
         TickBudget();
         TickCollapse();
 
@@ -180,13 +195,13 @@ public partial class AdvisorRoot : CanvasLayer
         box.AddThemeConstantOverride("separation", 3);
         _panel.AddChild(box);
 
-        _header = MakeLabel($"伤害顾问 v{Entry.Version}", 15, new Color(0.70f, 0.92f, 1f));
+        _header = MakeLabel($"伤害顾问 v{Entry.DisplayVersion}", 15, new Color(0.70f, 0.92f, 1f));
         _status = MakeLabel("-", 13, new Color(0.95f, 0.85f, 0.55f));
         _enemyLine = MakeLabel("-", 12, new Color(0.95f, 0.75f, 0.75f));
         _handLines = MakeLabel("-", 12, new Color(0.9f, 0.9f, 0.95f));
         _planLines = MakeLabel("-", 14, new Color(0.65f, 1f, 0.7f));
         _killLine = MakeLabel("-", 13, new Color(1f, 0.85f, 0.4f));        _footer = MakeLabel("-", 11, new Color(0.65f, 0.65f, 0.72f));
-        _hintLine = MakeLabel("F6 模式 · F7 掉血上限 · F8 隐藏 · F9 注入 · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
+        _hintLine = MakeLabel($"F6 模式 · F7 掉血上限 · F8 隐藏{InjectHint} · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
 
         foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _killLine, _footer, _hintLine })
             box.AddChild(label);        AddChild(_panel);
@@ -278,7 +293,7 @@ public partial class AdvisorRoot : CanvasLayer
         if (_hintLine is not null)
         {
             _hintLine.Visible = true;
-            _hintLine.Text = $"F6 {(AdvisorSettings.DamageFirst ? "输出" : "保命")} · F7 掉血上限({AdvisorSettings.HpLossBudget}) · F8 隐藏 · F9 注入 · F10 折叠 · 拖动移动";
+            _hintLine.Text = $"F6 {(AdvisorSettings.DamageFirst ? "输出" : "保命")} · F7 掉血上限({AdvisorSettings.HpLossBudget}) · F8 隐藏{InjectHint} · F10 折叠 · 拖动移动";
         }
     }
 
@@ -315,6 +330,7 @@ public partial class AdvisorRoot : CanvasLayer
         _previousMouseDown = down;
     }
 
+#if !WORKSHOP
     private void TickInject()
     {
         bool pressed = Input.IsKeyPressed(Key.F9);
@@ -396,6 +412,7 @@ public partial class AdvisorRoot : CanvasLayer
             Entry.Log("注入异常：" + ex);
         }
     }
+#endif
 
     private void TickToggle()
     {
@@ -481,8 +498,10 @@ public partial class AdvisorRoot : CanvasLayer
         if (handKey != _lastLoggedHand && _handDumpCount < 25)
         {
             _lastLoggedHand = handKey;
-            
+
+#if !WORKSHOP
             Entry.DumpSilentPoolOnce();
+#endif
             _handDumpCount++;
             Entry.Log($"手牌快照#{_handDumpCount} turn={pcs.TurnNumber} energy={pcs.Energy} hand={hand.Count} draw={pcs.DrawPile.Cards.Count} enemies={enemies.Count} hp={myCreature.CurrentHp} block={myCreature.Block} incoming={advice.IncomingDamage} nodes={advice.NodesExplored}");
             foreach (CardEffect e in advice.HandEffects)
@@ -502,7 +521,7 @@ public partial class AdvisorRoot : CanvasLayer
         }
 
         if (_header is not null)
-            _header.Text = $"伤害顾问 v{Entry.Version}  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  {(AdvisorSettings.DamageFirst ? "输出优先" : "保命优先")}  ·  掉血 ≤{AdvisorSettings.HpLossBudget}";
+            _header.Text = $"伤害顾问 v{Entry.DisplayVersion}  ·  第 {pcs.TurnNumber} 回合  ·  能量 {pcs.Energy}/{pcs.MaxEnergy}  ·  {(AdvisorSettings.DamageFirst ? "输出优先" : "保命优先")}  ·  掉血 ≤{AdvisorSettings.HpLossBudget}";
 
         if (_status is not null)
         {
@@ -587,7 +606,7 @@ public partial class AdvisorRoot : CanvasLayer
             string sampleNote = advice.EnemiesBefore.Count > 0
                 ? $"伤害按 {advice.EnemiesBefore[0].Index} 号怪的面板值"
                 : "";
-            _footer.Text = $"v{Entry.Version} 保命优先→最大伤害 · 抽牌按牌堆顺序(不洗弃牌堆)"
+            _footer.Text = $"v{Entry.DisplayVersion} 保命优先→最大伤害 · 抽牌按牌堆顺序(不洗弃牌堆)"
                          + (sampleNote.Length > 0 ? $" · {sampleNote}" : "")
                          + $"（搜索 {advice.NodesExplored} 节点）";
         }
