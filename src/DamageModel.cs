@@ -106,6 +106,20 @@ internal sealed class CardEffect
     /// <summary>打出后本回合所有小刀改为攻击全体（刀扇）。</summary>
     public bool MakesShivsHitAll { get; init; }
 
+    // ---- 静默低估补齐：这些牌以前"看着有支持、实际没算" ----
+    /// <summary>跟踪：本回合对虚弱状态的敌人 +50% 攻击伤害。</summary>
+    public bool GrantsTracking { get; init; }
+    /// <summary>获得 N 点无实体：每段来袭伤害只造成 1 点（幽魂形态）。</summary>
+    public int GrantsIntangible { get; init; }
+    /// <summary>紧勒：本回合之后每打出一张牌，该敌人失去 N 点生命（无视格挡）。</summary>
+    public int Strangle { get; init; }
+    /// <summary>猛扑：下一张技能牌耗能变为 0。</summary>
+    public bool MakesNextSkillFree { get; init; }
+    /// <summary>咕嘟冒泡：目标身上没有中毒时不给毒。</summary>
+    public bool NeedsPoisonedTarget { get; init; }
+    /// <summary>回响斩击：每有一名敌人被击杀就重复一次全体伤害。</summary>
+    public bool RepeatsOnKill { get; init; }
+
 
 
     /// <summary>词条显示文本（消耗/保留/固有/奇巧/虚无/不可打出）。</summary>
@@ -166,6 +180,13 @@ internal sealed class SimEnemy
         }
     }
 
+    /// <summary>
+    /// 算上"无实体"的来袭伤害：无实体时每段攻击只造成 1 点（不看力量/虚弱等修正）。
+    /// 只有本来就有攻击意图（BaseIncoming &gt; 0）的敌人才按段数计 1，纯 buff/debuff 的敌人仍是 0。
+    /// </summary>
+    public int IncomingWith(int playerIntangible)
+        => playerIntangible > 0 ? (BaseIncoming > 0 ? Math.Max(1, Hits) : 0) : Incoming;
+
     public SimEnemy Clone() => new()
     {
         Index = Index,
@@ -221,6 +242,8 @@ internal sealed class TurnAdvice
     public required int CurrentHp { get; init; }
     public required int NodesExplored { get; init; }
     public required IReadOnlyList<CardEffect> HandEffects { get; init; }
+    /// <summary>解算时玩家身上已有的无实体层数（面板显示"来袭"时要按它折算）。</summary>
+    public required int PlayerIntangible { get; init; }
 }
 
 /// <summary>
@@ -281,6 +304,8 @@ internal static class DamageModel
         Creature? sample = enemiesInOrder.FirstOrDefault(e => e.IsAlive);
         int strength = ReadPower<StrengthPower>(me);
         int accuracy = ReadPower<AccuracyPower>(me);
+        // 无实体是"整场战斗有效"的能力：面板每次解算都要把玩家身上已有的读进来
+        int playerIntangible = ReadPower<IntangiblePower>(me);
 
         var analyzeContext = new AnalyzeContext
         {
@@ -313,17 +338,19 @@ internal static class DamageModel
             Hand = new List<CardEffect>(handEffects),
             Draw = new Queue<CardEffect>(drawEffects),
             Enemies = enemies.Select(e => e.Clone()).ToList(),
+            Intangible = playerIntangible,
         }, 0);
 
         return new TurnAdvice
         {
             Plan = context.Best,
             EnemiesBefore = enemies,
-            IncomingDamage = enemies.Sum(e => e.Incoming),
+            IncomingDamage = enemies.Sum(e => e.IncomingWith(playerIntangible)),
             CurrentBlock = currentBlock,
             CurrentHp = currentHp,
             NodesExplored = context.Nodes,
             HandEffects = handEffects,
+            PlayerIntangible = playerIntangible,
         };
     }
 
@@ -365,6 +392,21 @@ internal static class DamageModel
         public bool FirstShivBonusUsed { get; set; }
         /// <summary>本回合打出过刀扇后，小刀改为攻击全体。</summary>
         public bool ShivsHitAll { get; set; }
+        /// <summary>
+        /// 跟踪：只在"本回合计划中新打出跟踪"之后加 ×1.5。
+        /// ⚠️ 不能按"玩家身上有无跟踪"来加——卡面预览值本身已含力量/虚弱/易伤这类全局修正，
+        /// 本场早就有的跟踪大概率也已经算进预览里了，再加一次就是重复计算。
+        /// （与 VulnerableThisTurn 同一个思路；待实机验证）
+        /// </summary>
+        public bool TrackingNew { get; set; }
+        /// <summary>无实体层数：&gt;0 时每段来袭伤害只造成 1 点。</summary>
+        public int Intangible { get; set; }
+        /// <summary>紧勒：本回合之后每张牌让该敌人失去的生命值。</summary>
+        public int StrangleAmount { get; set; }
+        /// <summary>紧勒的目标编号（0 = 未指定）。</summary>
+        public int StrangleTarget { get; set; }
+        /// <summary>猛扑：下一张技能牌免费。</summary>
+        public bool NextSkillFree { get; set; }
         public List<CardEffect> Hand { get; init; } = new();
         public Queue<CardEffect> Draw { get; init; } = new();
         public List<SimEnemy> Enemies { get; init; } = new();
@@ -430,9 +472,10 @@ internal static class DamageModel
                 if (duplicate)
                     continue;
 
+                // 猛扑：下一张技能牌免费（与子弹时间的"手牌免费"一样都是 0 费）
                 int effectiveCost = card.IsXCost
                     ? state.Energy
-                    : (state.HandFree ? 0 : card.Cost);
+                    : (state.HandFree || (state.NextSkillFree && card.IsSkill) ? 0 : card.Cost);
                 if (effectiveCost > state.Energy)
                     continue;
 
@@ -473,6 +516,13 @@ internal static class DamageModel
                 FirstShivBonus = state.FirstShivBonus + card.FirstShivBonus,
                 FirstShivBonusUsed = state.FirstShivBonusUsed,
                 ShivsHitAll = state.ShivsHitAll || card.MakesShivsHitAll,
+                TrackingNew = state.TrackingNew || card.GrantsTracking,
+                Intangible = state.Intangible + card.GrantsIntangible,
+                // 紧勒：以最后打出的一张为准（同一回合叠加两次没有意义，取大的那个更安全）
+                StrangleAmount = card.Strangle > state.StrangleAmount ? card.Strangle : state.StrangleAmount,
+                StrangleTarget = card.Strangle > 0 ? targetIndex : state.StrangleTarget,
+                // 猛扑：打出后置位；打出一张技能牌就消耗掉；其它牌不影响
+                NextSkillFree = card.MakesNextSkillFree || (state.NextSkillFree && !card.IsSkill),
                 Hand = new List<CardEffect>(state.Hand),
                 Draw = new Queue<CardEffect>(state.Draw),
                 Enemies = state.Enemies.Select(e => e.Clone()).ToList(),
@@ -542,6 +592,14 @@ internal static class DamageModel
                 }
             }
 
+            // 紧勒：本回合之后每打出一张牌，该名敌人都会失去 N 点生命（无视格挡）
+            if (state.StrangleAmount > 0)
+            {
+                SimEnemy? strangled = next.Enemies.FirstOrDefault(e => e.Index == state.StrangleTarget && e.Alive);
+                if (strangled is not null)
+                    ApplyDamageIgnoringBlock(next, strangled, state.StrangleAmount);
+            }
+
             // 暴露这类"先清格挡再结算"的牌：清完格挡，后面的伤害/易伤才不会被格挡吃掉
             if (played.RemovesBlock)
             {
@@ -560,12 +618,19 @@ internal static class DamageModel
             {
                 if (played.HitsAll)
                 {
-                    foreach (SimEnemy enemy in next.Enemies.Where(e => e.Alive).ToList())
+                    int aliveBefore = next.Enemies.Count(e => e.Alive);
+                    ApplyDamageToAll(next, damage, played.IsAttack);
+                    // 回响斩击：每有一名敌人被击杀，就重复一次全体伤害
+                    if (played.RepeatsOnKill)
                     {
-                        int before = enemy.Hp;
-                        ApplyDamage(next, enemy, damage * (enemy.VulnerableThisTurn > 0 ? 1.5m : 1m));
-                        if (enemy.Hp < before)
-                            ApplyEnvenom(next, enemy);
+                        for (int round = 0; round < 8; round++)
+                        {
+                            int aliveNow = next.Enemies.Count(e => e.Alive);
+                            if (aliveNow >= aliveBefore || aliveNow == 0)
+                                break;
+                            aliveBefore = aliveNow;
+                            ApplyDamageToAll(next, damage, played.IsAttack);
+                        }
                     }
                 }
                 else
@@ -574,7 +639,7 @@ internal static class DamageModel
                     if (target is not null)
                     {
                         int before = target.Hp;
-                        ApplyDamage(next, target, damage * (target.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                        ApplyDamage(next, target, damage * DamageMultiplier(next, target, played.IsAttack));
                         if (target.Hp < before)
                             ApplyEnvenom(next, target);
                     }
@@ -589,7 +654,7 @@ internal static class DamageModel
 
             foreach (SimEnemy debuffTarget in debuffTargets)
             {
-                if (played.Poison > 0)
+                if (played.Poison > 0 && !(played.NeedsPoisonedTarget && debuffTarget.Poison == 0))
                     debuffTarget.Poison += played.Poison;
                 if (played.Weak > 0)
                 {
@@ -737,11 +802,11 @@ internal static class DamageModel
                 if (discarded.HitsAll)
                 {
                     foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
-                        ApplyDamage(state, enemy, discarded.Damage * (enemy.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                        ApplyDamage(state, enemy, discarded.Damage * DamageMultiplier(state, enemy, discarded.IsAttack));
                 }
                 else if (target is not null)
                 {
-                    ApplyDamage(state, target, discarded.Damage * (target.VulnerableThisTurn > 0 ? 1.5m : 1m));
+                    ApplyDamage(state, target, discarded.Damage * DamageMultiplier(state, target, discarded.IsAttack));
                 }
             }
 
@@ -823,6 +888,32 @@ internal static class DamageModel
             state.Damage += dealt;
         }
 
+        /// <summary>
+        /// 伤害倍率：易伤 ×1.5；跟踪（Tracking）只对**攻击**生效，对处于虚弱的敌人再 ×1.5。
+        /// 两个 1.5 叠乘（这也是游戏里的行为：易伤与跟踪是不同来源的加成）。
+        /// </summary>
+        private static decimal DamageMultiplier(SearchState state, SimEnemy target, bool isAttack)
+        {
+            decimal multiplier = 1m;
+            if (target.VulnerableThisTurn > 0)
+                multiplier *= 1.5m;
+            if (isAttack && state.TrackingNew && target.Weak > 0)
+                multiplier *= 1.5m;
+            return multiplier;
+        }
+
+        /// <summary>对全体存活敌人结算一次伤害（含涂毒）。</summary>
+        private static void ApplyDamageToAll(SearchState state, decimal damage, bool isAttack)
+        {
+            foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
+            {
+                int before = enemy.Hp;
+                ApplyDamage(state, enemy, damage * DamageMultiplier(state, enemy, isAttack));
+                if (enemy.Hp < before)
+                    ApplyEnvenom(state, enemy);
+            }
+        }
+
         private static void ApplyDamage(SearchState state, SimEnemy target, decimal amount)
         {
             int remaining = (int)amount;
@@ -854,10 +945,13 @@ internal static class DamageModel
               .Append(state.AttacksPlayed).Append('|')
               .Append(state.HandFree ? 1 : 0).Append(state.NoDraw ? 1 : 0).Append(state.DoubleBlock ? 1 : 0)
               .Append(state.FirstShivBonusUsed ? 1 : 0).Append(state.ShivsHitAll ? 1 : 0)
+              .Append(state.TrackingNew ? 1 : 0).Append(state.NextSkillFree ? 1 : 0)
               .Append('|').Append(state.ShivBonus).Append('|').Append(state.BlockPerCard).Append('|')
               .Append(state.Envenom).Append('|').Append(state.PoisonPerDraw).Append('|')
               .Append(state.DamagePerCardPlayed).Append('|').Append(state.DamagePerDraw).Append('|')
-              .Append(state.FirstShivBonus).Append('|');
+              .Append(state.FirstShivBonus).Append('|')
+              .Append(state.Intangible).Append('|').Append(state.StrangleAmount).Append('|')
+              .Append(state.StrangleTarget).Append('|');
 
             foreach (string id in state.Hand.Select(c => c.Id).OrderBy(x => x, StringComparer.Ordinal))
                 sb.Append(id).Append(',');
@@ -900,7 +994,7 @@ internal static class DamageModel
 
         private void Consider(SearchState state)
         {
-            int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoison).Sum(e => e.Incoming);
+            int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoison).Sum(e => e.IncomingWith(state.Intangible));
             int totalBlock = CurrentBlock + state.Block;
             int hpLoss = Math.Max(0, incoming - totalBlock);
             bool lethal = hpLoss >= CurrentHp;
@@ -1205,6 +1299,13 @@ internal static class DamageModel
         bool triggersPoisonNow = className == "Outbreak";
         bool removesBlock = SilentLogic.RemovesEnemyBlock(className);
         bool makesShivsHitAll = SilentLogic.MakesShivsHitAll(className);
+        // 静默低估补齐：这些牌以前被判成"有支持但没效果"或干脆没算
+        bool grantsTracking = SilentLogic.GrantsTracking(className);
+        int grantsIntangible = SilentLogic.GrantsIntangible(className) ? ReadInt(card, "IntangiblePower") : 0;
+        int strangle = SilentLogic.AppliesStrangle(className) ? ReadInt(card, "StranglePower") : 0;
+        bool nextSkillFree = SilentLogic.MakesNextSkillFree(className);
+        bool needsPoisonedTarget = SilentLogic.NeedsPoisonedTarget(className);
+        bool repeatsOnKill = SilentLogic.RepeatsOnKill(className);
         if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
             vulnerable = ReadInt(card, "Power");
         string powerNote = SilentLogic.ImmediatePowerNote(className);
@@ -1237,7 +1338,9 @@ internal static class DamageModel
             || envenom != 0 || poisonPerDraw != 0 || damagePerCardPlayed != 0 || damagePerDraw != 0
 
 
-            || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll;
+            || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll
+            || grantsTracking || grantsIntangible != 0 || strangle != 0 || nextSkillFree
+            || needsPoisonedTarget || repeatsOnKill;
 
 
 
@@ -1319,6 +1422,12 @@ internal static class DamageModel
             ScalingBaseHits = scalingBaseHits,
             RemovesBlock = removesBlock,
             MakesShivsHitAll = makesShivsHitAll,
+            GrantsTracking = grantsTracking,
+            GrantsIntangible = grantsIntangible,
+            Strangle = strangle,
+            MakesNextSkillFree = nextSkillFree,
+            NeedsPoisonedTarget = needsPoisonedTarget,
+            RepeatsOnKill = repeatsOnKill,
 
 
 

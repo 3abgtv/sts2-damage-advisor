@@ -68,6 +68,8 @@ public partial class AdvisorRoot : CanvasLayer
         "Finisher", "Mirage", "StormOfSteel", "GrandFinale",
         // v0.9.7 修复过、需要实机核对的牌
         "Sidestep", "DaggerSpray", "Expose", "FanOfKnives", "EscapePlan", "Afterimage",
+        // v0.9.9 新建模、待实机验证的牌
+        "Tracking", "WraithForm", "Strangle", "Pounce", "BubbleBubble", "EchoingSlash",
     };
 #endif
     private string _signature = "";
@@ -514,7 +516,7 @@ public partial class AdvisorRoot : CanvasLayer
                 string byMe = foe is null ? "?" : DamageModel.IncomingOf(foe, myCreature).Total.ToString();
                 string byTeam = foe is null ? "?" : DamageModel.IncomingOfAllies(foe, allies).Total.ToString();
                 string buffs = foe is null ? "?" : DamageModel.DescribePowers(foe);
-                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} blk={se.Block} incoming={se.Incoming} | {intent}"
+                Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} blk={se.Block} incoming={se.IncomingWith(advice.PlayerIntangible)} | {intent}"
                           + $" | 按我算={byMe} 按全队算={byTeam} | buff[{buffs}]");
             }
             Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
@@ -531,8 +533,10 @@ public partial class AdvisorRoot : CanvasLayer
 
         if (_enemyLine is not null)
         {
-            var enemyLines = advice.EnemiesBefore.Select(e => $"{e.Index}.{e.Name} {e.Hp}/{e.MaxHp}(来袭{e.Incoming})" + (e.PowersText.Length > 0 && e.PowersText != "无" ? $" [{e.PowersText}]" : ""));
-            _enemyLine.Text = "敌人：" + string.Join("  ", enemyLines) + $"\n合计来袭 {advice.IncomingDamage} 伤害（打死怪会减少）";
+            // 玩家有无实体时，来袭伤害要按"每段 1 点"折算（模型内部也是这么算的）
+            var enemyLines = advice.EnemiesBefore.Select(e => $"{e.Index}.{e.Name} {e.Hp}/{e.MaxHp}(来袭{e.IncomingWith(advice.PlayerIntangible)})" + (e.PowersText.Length > 0 && e.PowersText != "无" ? $" [{e.PowersText}]" : ""));
+            string intangibleNote = advice.PlayerIntangible > 0 ? "（你身上有无实体，已按每段 1 点折算）" : "";
+            _enemyLine.Text = "敌人：" + string.Join("  ", enemyLines) + $"\n合计来袭 {advice.IncomingDamage} 伤害（打死怪会减少）{intangibleNote}";
         }
 
         if (_handLines is not null)

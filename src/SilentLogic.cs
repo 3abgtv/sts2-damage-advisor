@@ -147,6 +147,11 @@ internal static class SilentLogic
         "FanOfKnives" => "小刀改为攻击全体（本回合）",
         "Expose" => "清除目标格挡并给予易伤",
         "Sidestep" => "下回合+1能量（本回合无收益）",
+        "Tracking" => "本回合对虚弱敌人 +50% 伤害",
+        "Strangle" => "本回合之后每张牌让该敌人失去2点生命",
+        "Pounce" => "下一张技能牌耗能变 0",
+        "BladeOfInk" => "生成墨影小刀（按普通小刀算，可能偏低）",
+        "TheHunt" => "斩杀的额外卡牌奖励在战斗结算时，不影响本回合",
         _ => "",
     };
 
@@ -159,10 +164,28 @@ internal static class SilentLogic
         "Concoct" => "调制：给队友加毒，未建模",
         "Flanking" => "夹击：多人向效果，未建模",
         "Fade" => "消影：给队友加敏捷，未建模",
-        "Sneaky" => "鬼祟：能力牌，本回合无收益",
-        "Tracking" => "跟踪：能力牌，本回合无收益",
+        "Sneaky" => "鬼祟：只有队友攻击时才有收益，单人局无收益",
+        "MasterPlanner" => "谋划专家：技能获得奇巧，触发方式未确认，未建模",
         _ => "",
     };
+
+    /// <summary>跟踪：本回合（能力牌，整场战斗有效）对处于虚弱的敌人 +50% 攻击伤害。</summary>
+    public static bool GrantsTracking(string className) => className is "Tracking";
+
+    /// <summary>获得"无实体"：每段来袭伤害只造成 1 点（幽魂形态）。</summary>
+    public static bool GrantsIntangible(string className) => className is "WraithForm";
+
+    /// <summary>紧勒：本回合之后每打出一张牌，该敌人失去 N 点生命（无视格挡）。</summary>
+    public static bool AppliesStrangle(string className) => className is "Strangle";
+
+    /// <summary>猛扑：下一张技能牌耗能变为 0。</summary>
+    public static bool MakesNextSkillFree(string className) => className is "Pounce";
+
+    /// <summary>咕嘟冒泡：只有目标已有中毒时才给中毒。</summary>
+    public static bool NeedsPoisonedTarget(string className) => className is "BubbleBubble";
+
+    /// <summary>回响斩击：每有一名敌人被击杀，就重复一次全体伤害。</summary>
+    public static bool RepeatsOnKill(string className) => className is "EchoingSlash";
 }
 
 
