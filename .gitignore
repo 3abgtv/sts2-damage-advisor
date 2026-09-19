@@ -12,3 +12,5 @@ docs/silent-pool.txt
 .claude/
 # 工坊上传内容由 build.ps1 -Workshop 填充（构建产物），工作区其余文件照常跟踪
 workshop/content/
+# 日志验证报告（tools/verify-log.py 输出，含游戏内文本）
+docs/verify-report.txt
