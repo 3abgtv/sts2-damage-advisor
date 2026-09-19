@@ -82,6 +82,12 @@ workshop/
 - 作者账号**通常订阅不了自己的物品**，所以"装到本地能否加载"要用**第二个 Steam 账号**订阅，
   或手动把 `content/` 拷到 `steamapps/workshop/content/2868840/<itemid>/` 模拟。
 - 可见性（`private`/`unlisted`/`friends_only`/`public`）随时能在网页端改，前三种都不进搜索结果。
+- ⚠️ **`workshop.json` 的 `visibility` 实测在首次上传时不一定生效**：设为 `unlisted` 上传后，
+  非作者用直链仍看不到（`GetPublishedFileDetails` 也查不到该物品），重传一次也没变。
+  所以**首次上传后必须去网页端确认并修改可见性**（物品页 → 修改物品 → 可见性）。
+  自测方法：用**未登录**的浏览器窗口打开物品链接——未登录也能看 = unlisted 已生效；
+  提示找不到 = 还是 private / friends_only。
+  （另：`steamcommunity.com` 在国内常被墙，页面"完全打不开/转圈"是网络问题，与可见性无关，需要代理。）
 - `minBranch` / `maxBranch` 官方说行为怪异，留空（= 支持所有分支），尽量在网页端维护。
 - 描述是玩家唯一的说明来源（`content/` 里不放 README），必须写清按键、已知限制与验证状态。
 - 工坊版的 `affects_gameplay: false` 只有在**编译期剔除**注入功能后才成立，不能靠"默认关闭"。
