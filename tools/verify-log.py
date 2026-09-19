@@ -47,10 +47,14 @@ CARD_RE = re.compile(
     r"ok=(?P<ok>True|False) note=(?P<note>.*?) vars=\[(?P<vars>.*)\]\s*$"
 )
 
+# 日志行首形如 `14:10:49 [DamageAdvisor] …`，用来给不一致标时间
+TIME_RE = re.compile(r"^(?P<time>\d{2}:\d{2}:\d{2})\s")
+
 
 @dataclass
 class Mismatch:
     lineno: int
+    time: str
     snapshot: int
     card: str
     field: str
@@ -154,7 +158,7 @@ def expected_shivs(name: str, vars_: dict[str, tuple[float, float]]) -> float:
     return total
 
 
-def check_card(lineno: int, snapshot: int, m: re.Match, stats: Stats) -> list[Mismatch]:
+def check_card(lineno: int, time_str: str, snapshot: int, m: re.Match, stats: Stats) -> list[Mismatch]:
     name = m.group("name").strip()
     vars_ = parse_vars(m.group("vars"))
     stats.cards_seen.add(name)
@@ -186,7 +190,7 @@ def check_card(lineno: int, snapshot: int, m: re.Match, stats: Stats) -> list[Mi
     stats.compared += 1
     for fld, exp in expected.items():
         if abs(got[fld] - exp) > 1e-6:
-            out.append(Mismatch(lineno, snapshot, name, fld, got[fld], exp, m.group("vars")))
+            out.append(Mismatch(lineno, time_str, snapshot, name, fld, got[fld], exp, m.group("vars")))
     return out
 
 
@@ -203,6 +207,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="比对 DamageAdvisor.log 里的面板值与游戏卡面值")
     ap.add_argument("--log", default=default_log, help=f"日志路径（默认 {default_log}）")
     ap.add_argument("--report", default=os.path.join(repo, "docs", "verify-report.txt"), help="报告输出路径")
+    ap.add_argument(
+        "--tail",
+        type=int,
+        default=0,
+        help="只扫描日志最后 N 行（0 = 全部）。日志是追加的，修完一处要做复验时用它避开历史数据",
+    )
     args = ap.parse_args()
 
     if not os.path.isfile(args.log):
@@ -215,22 +225,28 @@ def main() -> int:
     stats = Stats()
     mismatches: list[Mismatch] = []
     snapshot = 0
+    current_time = "?"
     with open(args.log, "r", encoding="utf-8", errors="replace") as fh:
-        for lineno, line in enumerate(fh, 1):
-            stats.lines_scanned += 1
-            snap = SNAPSHOT_RE.search(line)
-            if snap:
-                snapshot = int(snap.group("n"))
-                continue
-            m = CARD_RE.search(line)
-            if not m:
-                continue
-            stats.card_lines += 1
-            mismatches.extend(check_card(lineno, snapshot, m, stats))
+        all_lines = fh.read().splitlines()
+    start = max(0, len(all_lines) - args.tail) if args.tail > 0 else 0
+    for lineno, line in enumerate(all_lines[start:], start + 1):
+        stats.lines_scanned += 1
+        tm = TIME_RE.match(line)
+        if tm:
+            current_time = tm.group("time")
+        snap = SNAPSHOT_RE.search(line)
+        if snap:
+            snapshot = int(snap.group("n"))
+            continue
+        m = CARD_RE.search(line)
+        if not m:
+            continue
+        stats.card_lines += 1
+        mismatches.extend(check_card(lineno, current_time, snapshot, m, stats))
 
     lines = [
         "DamageAdvisor 日志验证报告（A 类：面板值 vs 游戏卡面值）",
-        f"日志：{args.log}",
+        f"日志：{args.log}" + (f"（只扫最后 {args.tail} 行）" if args.tail > 0 else ""),
         f"扫描 {stats.lines_scanned} 行，牌行 {stats.card_lines} 条："
         f"比对 {stats.compared} 张、跳过未建模 {stats.skipped_unmodeled} 张",
         f"出现过的牌：{len(stats.cards_seen)} 种",
@@ -241,7 +257,7 @@ def main() -> int:
         lines.append("")
         for mm in mismatches:
             lines.append(
-                f"  第{mm.lineno}行 快照#{mm.snapshot}  {mm.card}  {mm.field}: "
+                f"  [{mm.time}] 第{mm.lineno}行 快照#{mm.snapshot}  {mm.card}  {mm.field}: "
                 f"面板={fmt(mm.got)} 期望={fmt(mm.expected)}   [vars: {mm.why}]"
             )
     else:
