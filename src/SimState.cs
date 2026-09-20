@@ -289,13 +289,15 @@ internal static class SimCommands
         var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
 
-        // ① 小刀的精准加成
-        decimal baseDamage = card.Damage;
+        // ① 小刀的精准加成 + X 费按投入能量放大
+        decimal baseDamage = card.IsXCost ? card.Damage * cost : card.Damage;
         if (baseDamage > 0 && SilentLogic.IsShivCard(card.ClassName) && sim.ShivBonus > 0)
         {
             baseDamage += sim.ShivBonus;
             parts.Add($"精准 +{sim.ShivBonus}");
         }
+        if (card.IsXCost)
+            parts.Add($"X 费：投入 {cost} 点能量 → 伤害 {baseDamage:0.#}");
 
         // ② 伤害（先扣格挡再扣血；只对本回合新上的易伤 ×1.5）+ 涂毒
         if (baseDamage > 0)
@@ -317,7 +319,9 @@ internal static class SimCommands
         foreach (SimFoe foe in targets)
         {
             if (card.Poison > 0) parts.Add(ApplyPoison(foe, card.Poison));
-            if (card.Weak > 0) parts.Add(ApplyWeak(foe, card.Weak));
+            // X 费的状态（萎靡）：按投入能量给层数
+            int weak = card.IsXCost && card.WeakPerX > 0 ? card.WeakPerX * cost : card.Weak;
+            if (weak > 0) parts.Add(ApplyWeak(foe, weak));
             if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable));
         }
 
