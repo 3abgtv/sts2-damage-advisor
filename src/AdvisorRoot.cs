@@ -23,6 +23,7 @@ public partial class AdvisorRoot : CanvasLayer
     private Label? _enemyLine;
     private Label? _handLines;
     private Label? _planLines;
+    private Label? _nextTurnLine;
     private Label? _killLine;
     private Label? _footer;
     private Label? _hintLine;
@@ -204,10 +205,11 @@ public partial class AdvisorRoot : CanvasLayer
         _enemyLine = MakeLabel("-", 12, new Color(0.95f, 0.75f, 0.75f));
         _handLines = MakeLabel("-", 12, new Color(0.9f, 0.9f, 0.95f));
         _planLines = MakeLabel("-", 14, new Color(0.65f, 1f, 0.7f));
+        _nextTurnLine = MakeLabel("-", 11, new Color(0.62f, 0.86f, 0.86f));
         _killLine = MakeLabel("-", 13, new Color(1f, 0.85f, 0.4f));        _footer = MakeLabel("-", 11, new Color(0.65f, 0.65f, 0.72f));
         _hintLine = MakeLabel($"F6 模式 · F7 掉血上限 · F8 隐藏{InjectHint} · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
 
-        foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _killLine, _footer, _hintLine })
+        foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _nextTurnLine, _killLine, _footer, _hintLine })
             box.AddChild(label);        AddChild(_panel);
         ApplyCollapse();
     }
@@ -294,6 +296,7 @@ public partial class AdvisorRoot : CanvasLayer
         if (_status is not null) _status.Visible = show;
         if (_enemyLine is not null) _enemyLine.Visible = show;
         if (_handLines is not null) _handLines.Visible = show;        if (_footer is not null) _footer.Visible = show;
+        if (_nextTurnLine is not null) _nextTurnLine.Visible = show;
         if (_hintLine is not null)
         {
             _hintLine.Visible = true;
@@ -491,6 +494,8 @@ public partial class AdvisorRoot : CanvasLayer
             pcs.DrawPile.Cards,
             pcs.ExhaustPile.Cards,
             pcs.Energy,
+            pcs.MaxEnergy,
+            pcs.DiscardPile.Cards.Count,
             state.Enemies,
             allies,
             myCreature,
@@ -523,6 +528,7 @@ public partial class AdvisorRoot : CanvasLayer
                           + $" | 按我算={byMe} 按全队算={byTeam} | buff[{buffs}]");
             }
             Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
+            Entry.Log($"  下回合 现在结束=[{advice.NextTurnBaseline}] 照推荐打=[{plan.NextTurn}]");
         }
 
         if (_header is not null)
@@ -583,6 +589,13 @@ public partial class AdvisorRoot : CanvasLayer
                 int weakApplied = plan.Actions.Sum(a => a.Card.Weak);
                 _planLines.Text = $"推荐：{order}\n伤害 {plan.Damage:0.#} · 格挡 +{plan.Block} · {hurt} · 剩 {energyLeft} 能量" + (plan.EnergyGained > 0 ? $"（耗 {plan.EnergySpent}·回 {plan.EnergyGained}）" : "") + (weakApplied > 0 ? $" · 虚弱{weakApplied}" : "");
             }
+        }
+
+        if (_nextTurnLine is not null)
+        {
+            // 跨回合资源账：只算"确定"的部分（抽牌堆顺序、保留效果、下回合生效的牌）
+            _nextTurnLine.Text = $"下回合：现在结束 → {advice.NextTurnBaseline}\n"
+                               + $"          照推荐打 → {plan.NextTurn}";
         }
 
         if (_killLine is not null)
@@ -654,6 +667,8 @@ public partial class AdvisorRoot : CanvasLayer
             _enemyLine.Text = "-";
         if (_killLine is not null)
             _killLine.Text = "-";
+        if (_nextTurnLine is not null)
+            _nextTurnLine.Text = "-";
     }
 }
 

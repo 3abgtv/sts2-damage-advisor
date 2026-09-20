@@ -21,8 +21,7 @@ internal enum ScalingKind
     EnemyPoisonTotal,
 }
 
-/// <summary>一张牌在本回合的可量化效果。</summary>
-/// <remarks>
+/// <summary>一张牌在本回合的可量化效果。</summary>/// <remarks>
 /// 是 record 而不是 class：手上技法要"给手牌里某一张技能牌加奇巧"，
 /// 得复制一份带标记的实例（`effect with { IsSly = true }`），不能就地改（手牌对象在各搜索状态间共享）。
 /// </remarks>
@@ -136,6 +135,20 @@ internal sealed record CardEffect
     /// <summary>逃脱计划：只有抽到技能牌时才给的格挡（抽牌堆顺序在搜索里是已知的，出牌时判定）。</summary>
     public int BlockIfSkillDrawn { get; init; }
 
+    // ---- 跨回合资源账：这张牌给"下回合"留下什么 ----
+    /// <summary>下回合额外获得的能量（侧步）。</summary>
+    public int EnergyNextTurn { get; init; }
+    /// <summary>下回合额外加入手牌的牌数（猎杀者 2 / 必备工具 1 / 无尽刀刃 1 / 夜魇 3）。</summary>
+    public int HandNextTurn { get; init; }
+    /// <summary>下回合开始时直接获得的格挡（闪躲翻滚）。</summary>
+    public int BlockNextTurn { get; init; }
+    /// <summary>下回合开始时保留格挡（残影）——只保留没被打掉的部分。</summary>
+    public bool RetainBlock { get; init; }
+    /// <summary>回合结束时不再弃手牌（计划妥当）。</summary>
+    public bool RetainHand { get; init; }
+    /// <summary>带"保留"关键词：回合结束留在手里。</summary>
+    public bool IsRetain { get; init; }
+
 
 
     /// <summary>词条显示文本（消耗/保留/固有/奇巧/虚无/不可打出）。</summary>
@@ -146,6 +159,13 @@ internal sealed record CardEffect
     public bool Supported { get; init; } = true;
     public string Note { get; init; } = "";
     public CardModel? Source { get; init; }
+}
+
+/// <summary>下回合能确定的资源（跨回合资源账）。</summary>
+internal readonly record struct NextTurnResources(int Energy, int Hand, int Block)
+{
+    /// <summary>面板上显示的形态，如 "4能量/6张/5格挡"。</summary>
+    public override string ToString() => $"{Energy}能量/{Hand}张/{Block}格挡";
 }
 
 /// <summary>战斗中一只怪的简化状态（带屏幕编号）。</summary>
@@ -267,6 +287,8 @@ internal sealed class TurnPlan
 
     public int Kills { get; set; }
     public List<SimEnemy> EnemiesAfter { get; set; } = new();
+    /// <summary>照这套计划打完后，下回合能确定的资源（跨回合资源账）。</summary>
+    public NextTurnResources NextTurn { get; set; }
 }
 
 internal sealed class TurnAdvice
@@ -282,6 +304,8 @@ internal sealed class TurnAdvice
     public required int PlayerIntangible { get; init; }
     /// <summary>解算时玩家身上的触媒层数（面板判断"中毒先手击杀"时要按它折算）。</summary>
     public required int PlayerAccelerant { get; init; }
+    /// <summary>什么都不打（现在就结束回合）时，下回合能确定的资源。</summary>
+    public required NextTurnResources NextTurnBaseline { get; init; }
 }
 
 /// <summary>
@@ -299,6 +323,8 @@ internal static class DamageModel
         IReadOnlyList<CardModel> drawPile,
         IReadOnlyList<CardModel> exhaustPile,
         int energy,
+        int maxEnergy,
+        int discardPileCount,
         IReadOnlyList<Creature> enemiesInOrder,
         IReadOnlyList<Creature> allies,
         Creature me,
@@ -347,6 +373,11 @@ internal static class DamageModel
         int playerIntangible = ReadPower<IntangiblePower>(me);
         // 触媒同理（影响"中毒先手击杀"判定）
         int playerAccelerant = ReadPower<AccelerantPower>(me);
+        // 跨回合资源账：玩家身上**已经生效**的"下回合"能力（与本回合打出的取或，不重复计）
+        bool hasRetainBlock = ReadPower<BlurPower>(me) > 0;
+        bool hasRetainHand = ReadPower<WellLaidPlansPower>(me) > 0;
+        int passiveHandNextTurn = (ReadPower<InfiniteBladesPower>(me) > 0 ? 1 : 0)
+                                + (ReadPower<ToolsOfTheTradePower>(me) > 0 ? 1 : 0);
 
         // 小刀伤害：优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱/缩小等修正），
         // 都没有小刀时退回手算。必须在 Analyze 之前算出来——刀刃陷阱的伤害 = 张数 × 小刀伤害。
@@ -374,9 +405,14 @@ internal static class DamageModel
             CurrentBlock = currentBlock,
             CurrentHp = currentHp,
             EnemiesBefore = enemies,
+            MaxEnergy = maxEnergy,
+            DiscardPileCount = discardPileCount,
+            HasRetainBlock = hasRetainBlock,
+            HasRetainHand = hasRetainHand,
+            PassiveHandNextTurn = passiveHandNextTurn,
         };
 
-        context.Dfs(new SearchState
+        var initialState = new SearchState
         {
             Energy = energy,
             Hand = new List<CardEffect>(handEffects),
@@ -384,7 +420,13 @@ internal static class DamageModel
             Enemies = enemies.Select(e => e.Clone()).ToList(),
             Intangible = playerIntangible,
             Accelerant = playerAccelerant,
-        }, 0);
+        };
+        // "现在就结束回合"那一栏：用同一个算法算空计划下的资源
+        int incomingNow = enemies.Where(e => e.Alive && !e.DiesToPoisonWith(playerAccelerant))
+                                 .Sum(e => e.IncomingWith(playerIntangible));
+        context.ComputeBaseline(initialState, incomingNow);
+
+        context.Dfs(initialState, 0);
 
         return new TurnAdvice
         {
@@ -397,6 +439,7 @@ internal static class DamageModel
             HandEffects = handEffects,
             PlayerIntangible = playerIntangible,
             PlayerAccelerant = playerAccelerant,
+            NextTurnBaseline = context.Baseline,
         };
     }
 
@@ -493,6 +536,56 @@ internal static class DamageModel
         public TurnPlan Best { get; private set; } = new();
         public int Nodes { get; private set; }
         private bool _hasBest;
+
+        // ---- 跨回合资源账 ----
+        public required int MaxEnergy { get; init; }
+        public required int DiscardPileCount { get; init; }
+        /// <summary>玩家身上已生效的"下回合保留格挡"（残影）。</summary>
+        public required bool HasRetainBlock { get; init; }
+        /// <summary>玩家身上已生效的"回合结束不弃手牌"（计划妥当）。</summary>
+        public required bool HasRetainHand { get; init; }
+        /// <summary>已生效的无尽刀刃/必备工具给下回合加的牌数。</summary>
+        public required int PassiveHandNextTurn { get; init; }
+        /// <summary>什么都不打时下回合的资源（面板"现在结束"那一栏）。</summary>
+        public NextTurnResources Baseline { get; private set; }
+
+        /// <summary>每回合基础抽牌数。⚠️ 写死的假设（游戏里若有改基础抽牌的效果会偏），待实机核对。</summary>
+        private const int BaseDrawPerTurn = 5;
+
+        public void ComputeBaseline(SearchState initial, int incoming)
+            => Baseline = NextTurnResources(initial, incoming);
+
+        /// <summary>
+        /// 下回合能确定的资源账（只算"确定"的部分）：
+        ///   能量 = 能量上限 + 计划里打出过的"下回合 +X 能量"
+        ///   手牌 = 下回合抽牌（受洗牌下限限制）+ 保留的牌 + 计划里"下回合加牌"
+        ///   格挡 = （残影生效时）本回合没被打掉的部分 + 计划里"下回合直接获得格挡"
+        /// </summary>
+        public NextTurnResources NextTurnResources(SearchState state, int incoming)
+        {
+            int energy = MaxEnergy;
+            int handAdds = PassiveHandNextTurn;
+            int blockNext = 0;
+            bool retainBlock = HasRetainBlock;
+            bool retainHand = HasRetainHand;
+            foreach (PlannedAction action in state.Actions)
+            {
+                CardEffect c = action.Card;
+                energy += c.EnergyNextTurn;
+                handAdds += c.HandNextTurn;
+                blockNext += c.BlockNextTurn;
+                retainBlock |= c.RetainBlock;
+                retainHand |= c.RetainHand;
+            }
+
+            // 保留的手牌：计划妥当 → 整手牌留下；否则只有带"保留"关键词的牌
+            int kept = retainHand ? state.Hand.Count : state.Hand.Count(c => c.IsRetain);
+            // 下回合抽牌：抽牌堆不够就要洗弃牌堆（洗出什么不可知）→ 按"可用下限"算
+            int draw = Math.Min(BaseDrawPerTurn, state.Draw.Count + DiscardPileCount);
+            // 残影保留格挡：只保留没被来袭打掉的那部分
+            int leftover = Math.Max(0, CurrentBlock + state.Block - incoming);
+            return new NextTurnResources(energy, draw + kept + handAdds, (retainBlock ? leftover : 0) + blockNext);
+        }
 
         /// <summary>已探索过的等价状态（同一手牌/能量/敌人状态不重复展开，消除出牌顺序带来的排列爆炸）。</summary>
 
@@ -1157,6 +1250,7 @@ internal static class DamageModel
 
                 Kills = state.Enemies.Count(e => !e.Alive || e.DiesToPoisonWith(state.Accelerant)),
                 EnemiesAfter = state.Enemies.Select(e => e.Clone()).ToList(),
+                NextTurn = NextTurnResources(state, incoming),
             };
 
             if (!_hasBest)
@@ -1235,6 +1329,9 @@ internal static class DamageModel
         bool unplayable = false;
 
 
+        bool isRetainKeyword = false;
+
+
         string keywordsText = "";
 
 
@@ -1248,6 +1345,9 @@ internal static class DamageModel
 
 
             unplayable = card.Keywords.Contains(CardKeyword.Unplayable);
+
+
+            isRetainKeyword = card.Keywords.Contains(CardKeyword.Retain);
 
 
 
@@ -1472,6 +1572,16 @@ internal static class DamageModel
         int doublesNextSkills = SilentLogic.DoublesNextSkills(className)
             ? Math.Max(1, ReadInt(card, "Skills"))
             : 0;
+        // 跨回合资源账：这张牌给下回合留下什么
+        int energyNextTurn = SilentLogic.GainsEnergyNextTurn(className)
+            ? ReadByType(card, v => v is EnergyVar) ?? ReadInt(card, "Energy")
+            : 0;
+        int handNextTurn = SilentLogic.CardsNextTurn(className);
+        int blockNextTurn = SilentLogic.GrantsBlockNextTurn(className)
+            ? (int)Math.Floor(ReadPreview(card, "Block"))
+            : 0;
+        bool retainBlock = SilentLogic.RetainsBlock(className);
+        bool retainHand = SilentLogic.RetainsHand(className);
         if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
             vulnerable = ReadInt(card, "Power");
         string powerNote = SilentLogic.ImmediatePowerNote(className);
@@ -1507,7 +1617,8 @@ internal static class DamageModel
             || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll
             || grantsTracking || grantsIntangible != 0 || strangle != 0 || nextSkillFree
             || needsPoisonedTarget || repeatsOnKill || exhaustShivs != 0 || grantsSlyToSkill
-            || grantsAccelerant != 0 || doublesNextSkills != 0 || blockIfSkillDrawn != 0;
+            || grantsAccelerant != 0 || doublesNextSkills != 0 || blockIfSkillDrawn != 0
+            || energyNextTurn != 0 || handNextTurn != 0 || blockNextTurn != 0;
 
 
 
@@ -1598,6 +1709,12 @@ internal static class DamageModel
             ExhaustShivs = exhaustShivs,
             ExhaustShivDamage = exhaustShivDamage,
             BlockIfSkillDrawn = blockIfSkillDrawn,
+            EnergyNextTurn = energyNextTurn,
+            HandNextTurn = handNextTurn,
+            BlockNextTurn = blockNextTurn,
+            RetainBlock = retainBlock,
+            RetainHand = retainHand,
+            IsRetain = isRetainKeyword,
             GrantsSlyToSkill = grantsSlyToSkill,
             GrantsAccelerant = grantsAccelerant,
             DoublesNextSkills = doublesNextSkills,

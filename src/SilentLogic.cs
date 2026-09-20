@@ -207,6 +207,27 @@ internal static class SilentLogic
 
     /// <summary>逃脱计划：格挡是"抽到技能牌才给"，出牌时按实际抽到的牌判定。</summary>
     public static bool BlockOnlyIfSkillDrawn(string className) => className is "EscapePlan";
+
+    // ---- 跨回合资源账 ----
+
+    /// <summary>下回合额外加入手牌的**张数**（数字都写在描述里，没有变量可读）。</summary>
+    public static int CardsNextTurn(string className) => className switch
+    {
+        "Predator" => 2,          // 下个回合抽 2 张牌
+        "ToolsOfTheTrade" => 1,   // 回合开始时抽 1 张牌
+        "InfiniteBlades" => 1,    // 回合开始时加入 1 张小刀
+        "Nightmare" => 3,         // 下回合加入这张牌的 3 张复制品（不知道是哪张，只给数量）
+        _ => 0,
+    };
+
+    /// <summary>下回合开始时直接获得格挡（闪躲翻滚，数值同它本回合的 Block 变量）。</summary>
+    public static bool GrantsBlockNextTurn(string className) => className is "DodgeAndRoll";
+
+    /// <summary>下回合开始时保留格挡（残影）——只保留没被打掉的部分。</summary>
+    public static bool RetainsBlock(string className) => className is "Blur";
+
+    /// <summary>回合结束时不再弃手牌（计划妥当）。</summary>
+    public static bool RetainsHand(string className) => className is "WellLaidPlans";
 }
 
 
