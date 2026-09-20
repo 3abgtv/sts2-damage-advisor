@@ -23,6 +23,9 @@ namespace DamageAdvisor;
 /// </summary>
 internal static class CloneProbe
 {
+    /// <summary>最近一次预测的"照这个顺序打"，给面板显示用（空串＝没有待验证的预测）。</summary>
+    public static string LastSequence { get; private set; } = "";
+
     /// <summary>按下探测键时调用；不做任何推进、不修改真机状态。</summary>
     public static void Run(Player me, CombatState state)
     {
@@ -214,6 +217,14 @@ internal static class CloneProbe
         return parts.Count == 0 ? "" : "（能力：" + string.Join(" ", parts) + "）";
     }
 
+    /// <summary>从一条命令说明里抠出"打出「X」"的牌名，用于拼面板上的顺序提示。</summary>
+    private static string RegexCard(string step)
+    {
+        int start = step.IndexOf('「');
+        int end = step.IndexOf('」');
+        return start >= 0 && end > start ? step.Substring(start + 1, end - start - 1) : step;
+    }
+
     /// <summary>敌人状态的紧凑显示（只显示非 0 的项）。</summary>
     private static string StatusText(SimFoe foe)
     {
@@ -298,6 +309,7 @@ internal static class CloneProbe
                 Entry.Log($"[差分] 上一次预测无法验证：状态已推进（预测时第 {_pendingRound} 回合的 {_pendingFoeName}，"
                           + $"现在是第 {state.RoundNumber} 回合的 {foe.Name}）");
                 _hasPending = false;
+                LastSequence = "";
                 return;
             }
 
@@ -311,6 +323,7 @@ internal static class CloneProbe
                           + $"{foe.CurrentHp}血/中毒{poison}/易伤{vulnerable}/虚弱{weak}、我 {pcs.Energy}能量/{me.Creature.Block}格挡）"
                           + " —— 差分验证链闭环");
                 _hasPending = false;
+                LastSequence = "";
             }
             else
             {
@@ -451,9 +464,12 @@ internal static class CloneProbe
             }
 
             SavePending(predicted, foe, sim);
+            // 面板上直接显示"照这个顺序打"，省得去翻日志
+            LastSequence = "探测：照这个顺序打 → " + string.Join(" → ", steps.Select(s => RegexCard(s)))
+                         + $"（预期 我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡）";
             return $"影子状态已捕获（{before}）→ {string.Join(" → ", steps)} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡{StatusText(foe)}，"
                  + $"我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡（{kind}，手牌{sim.Hand.Count}/抽牌堆{sim.Draw.Count}）"
-                 + " ← 实际照这个顺序打，再按一次 F5 就会自动核对";
+                 + " ← 实际照这个顺序打（打完不用按 F5，面板会自动核对）";
         }
         catch (Exception ex)
         {

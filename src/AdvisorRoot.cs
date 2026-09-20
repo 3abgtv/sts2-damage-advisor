@@ -27,6 +27,10 @@ public partial class AdvisorRoot : CanvasLayer
     private Label? _killLine;
     private Label? _footer;
     private Label? _hintLine;
+#if !WORKSHOP
+    /// <summary>开发版：显示最近一次 F5 预测的"照这个顺序打"。</summary>
+    private Label? _probeLine;
+#endif
 
     private bool _started;
     private bool _loggedReady;
@@ -211,7 +215,12 @@ public partial class AdvisorRoot : CanvasLayer
         _hintLine = MakeLabel($"F6 模式 · F7 掉血上限 · F8 隐藏{InjectHint} · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
 
         foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _nextTurnLine, _killLine, _footer, _hintLine })
-            box.AddChild(label);        AddChild(_panel);
+            box.AddChild(label);
+#if !WORKSHOP
+        _probeLine = MakeLabel("", 12, new Color(1f, 0.78f, 0.45f));
+        _probeLine.Visible = false;
+        box.AddChild(_probeLine);
+#endif        AddChild(_panel);
         ApplyCollapse();
     }
 
@@ -543,6 +552,14 @@ public partial class AdvisorRoot : CanvasLayer
         // 差分验证：面板每次刷新都用实机状态核对上一次预测 ——
         // 这样"照预测打完之后"的那一刻必然被抓到，不需要玩家掐时机按 F5。
         CloneProbe.CheckPendingLive(me, state);
+
+        // 顺序提示也在这里刷新：它要在签名比对之前更新，否则按 F5 后（签名没变）面板不会重画
+        if (_probeLine is not null)
+        {
+            string seq = CloneProbe.LastSequence;
+            _probeLine.Visible = !AdvisorSettings.Collapsed && seq.Length > 0;
+            _probeLine.Text = seq;
+        }
 #endif
 
         if (pcs.Phase != PlayerTurnPhase.Play)
