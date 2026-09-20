@@ -436,16 +436,30 @@ internal static class CloneProbe
                 return "主模型没给出推荐（本回合没有可打的有效牌）";
             }
 
-            string label = string.Join(" → ", advice.Plan.Actions.Select(a => a.Card.Name));
+            // 顺序里带上目标（目标牌写成"牌名[2号]"，与面板计划的写法一致）——
+            // 不带目标就复现不了同一终态，多怪时"照这个顺序打"等于没给。
+            string label = string.Join(" → ", advice.Plan.Actions.Select(
+                a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
             string before = BuildSignature(me, state);
             SimState sim = SimState.Capture(me, state, advice);
             int skipped = ReplayPlan(sim, advice);
 
-            SavePending(label, before, sim);
-            // 面板上直接显示"照这个顺序打"，省得去翻日志
-            LastSequence = "推荐顺序：" + label
-                         + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）"
-                         + (skipped > 0 ? $"　[{skipped} 张未能重放]" : "");
+            if (skipped > 0)
+            {
+                // 计划里有生成牌（小刀等）：影子手里根本没有这几张，打不出来，终态必然对不上。
+                // 这种回合**不登记预测** —— 否则会一直打"对照"，把"重放不了"误报成"算错了"。
+                _hasPending = false;
+                LastSequence = "推荐顺序：" + label
+                             + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）"
+                             + $"　[{skipped} 张生成牌无法重放 → 本回合不自动核对]";
+            }
+            else
+            {
+                SavePending(label, before, sim);
+                // 面板上直接显示"照这个顺序打"，省得去翻日志
+                LastSequence = "推荐顺序：" + label
+                             + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）";
+            }
 
             string foes = string.Join("、", sim.Foes.Where(f => f.Alive)
                 .Select(f => $"{f.Index}号 {f.Hp}血/{f.Block}格挡{StatusText(f)}"));
