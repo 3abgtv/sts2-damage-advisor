@@ -140,10 +140,22 @@ internal static class CloneProbe
             RelicModel live = relics[0];
             try
             {
-                RelicModel clone = live.ToMutable();
-                bool sharesVars = ReferenceEquals(clone.DynamicVars, live.DynamicVars);
-                parts.Add($"遗物 {live.Title}：ToMutable 成功（计数 {live.DisplayAmount}），共享 DynamicVars={sharesVars}"
-                          + (sharesVars ? " ← 浅拷贝，改克隆体会污染真机（后续要自己深克隆）" : " ← 深拷贝，可安全改"));
+                RelicModel? clone = DeepCloneModel(live);
+                if (clone is null)
+                {
+                    parts.Add($"遗物 {live.Title}：深克隆失败（找不到克隆钩子）");
+                }
+                else
+                {
+                    bool sharesVars = ReferenceEquals(clone.DynamicVars, live.DynamicVars);
+                    // 克隆体是我们自己的实例，改它安全：计数器 +1，真机必须纹丝不动
+                    int liveBefore = live.DisplayAmount;
+                    clone.IncrementStackCount();
+                    bool leaked = live.DisplayAmount != liveBefore;
+                    parts.Add($"遗物 {live.Title}：深克隆成功，共享 DynamicVars={sharesVars}"
+                              + (sharesVars ? " ← 仍共享（需要更深的拷贝）" : " ← 不共享")
+                              + (leaked ? " | 计数器写入：✗ 泄漏！" : " | 计数器写入：✓ 隔离（真机未变）"));
+                }
             }
             catch (Exception ex)
             {
@@ -152,6 +164,38 @@ internal static class CloneProbe
         }
 
         return string.Join(" | ", parts);
+    }
+
+    /// <summary>
+    /// 用"浅拷贝 + 受保护的深拷贝钩子"克隆模型 —— 等价于 CombatSolver 的 CloneModelForSimulation：
+    /// MemberwiseClone → DeepCloneFields → AfterCloned。
+    ///
+    /// ⚠️ 不用 `ToMutable()`：那是"可变模型"，只能用在特定位置，读它就会抛
+    /// `MutableModelException: ... used in incorrect place`（第一阶段实测确认）。
+    /// 这三个方法都是 protected，所以只能走反射。
+    /// </summary>
+    private static T? DeepCloneModel<T>(T source) where T : class
+    {
+        object? clone = InvokeNonPublic(source, typeof(object), "MemberwiseClone");
+        if (clone is null)
+            return null;
+        InvokeNonPublic(clone, source.GetType(), "DeepCloneFields");
+        InvokeNonPublic(clone, source.GetType(), "AfterCloned");
+        return clone as T;
+    }
+
+    /// <summary>调用非公开方法（沿继承链找），返回其返回值。</summary>
+    private static object? InvokeNonPublic(object target, Type declaring, string name)
+    {
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Public;
+
+        System.Reflection.MethodInfo? method = declaring.GetMethod(name, flags);
+        for (Type? t = declaring; method is null && t is not null; t = t.BaseType)
+            method = t.GetMethod(name, flags);
+
+        return method?.Invoke(target, null);
     }
 
     /// <summary>真机指纹：把会影响推算的 live 值拼成一个字符串，用于前后逐字比对。</summary>
