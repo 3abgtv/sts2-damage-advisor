@@ -365,7 +365,20 @@ public partial class AdvisorRoot : CanvasLayer
         _previousInjectKey = pressed;
     }
 
-    /// <summary>F9：把下一张测试牌直接加入手牌（走游戏自己的 API）。</summary>
+    /// <summary>
+    /// F9 优先补齐的"探测牌"：能力 / 格挡 / 状态 / 攻击 各一张。
+    /// 差分验证要靠这几类牌（能力牌验持续效果、状态牌验上状态、攻击牌验伤害、格挡牌验余像），
+    /// 缺哪类补哪类，省得等抽牌。
+    /// </summary>
+    private static readonly (string ClassName, string Role)[] ProbeKit =
+    {
+        ("Afterimage", "能力牌·余像（每打出一张牌 +1 格挡）"),
+        ("DefendSilent", "格挡牌·防御"),
+        ("DeadlyPoison", "状态牌·致命毒药（上毒）"),
+        ("StrikeSilent", "攻击牌·打击"),
+    };
+
+    /// <summary>F9：先补齐探测需要的牌，都齐了再按 TestCards 循环注入。</summary>
     private void InjectNextTestCard()
     {
         try
@@ -390,18 +403,39 @@ public partial class AdvisorRoot : CanvasLayer
                 return;
             }
 
+            // ① 先补齐"探测需要的牌"：能力 / 格挡 / 状态 / 攻击 各一张，缺哪类补哪类
+            //    （这样不用等抽到牌就能跑 F5 的差分验证；一次补一张，连按 F9 即可）
+            IReadOnlyList<CardModel> hand = me.PlayerCombatState?.Hand.Cards ?? Array.Empty<CardModel>();
+            foreach ((string want, string role) in ProbeKit)
+            {
+                bool alreadyHave = false;
+                foreach (CardModel c in hand)
+                {
+                    if (c.GetType().Name == want)
+                    {
+                        alreadyHave = true;
+                        break;
+                    }
+                }
+                if (alreadyHave)
+                    continue;
+
+                CardModel? kitModel = FindCardModel(want);
+                if (kitModel is null)
+                {
+                    Entry.Log($"补齐失败：卡池里没有 {want}（跳过，走循环注入）");
+                    break;
+                }
+                Entry.Log($"F9 补齐探测牌：{role}（手里没有这一类）");
+                InjectAsync(state, me, state.CreateCard(kitModel, me), want);
+                return;
+            }
+
+            // ② 探测牌齐了 → 按 TestCards 循环注入
             string className = TestCards[_injectIndex % TestCards.Length];
             _injectIndex++;
 
-            CardModel? model = null;
-            foreach (CardModel candidate in ModelDb.AllCards)
-            {
-                if (candidate.GetType().Name == className)
-                {
-                    model = candidate;
-                    break;
-                }
-            }
+            CardModel? model = FindCardModel(className);
             if (model is null)
             {
                 Entry.Log($"注入失败：卡池里没有 {className}");
@@ -415,6 +449,16 @@ public partial class AdvisorRoot : CanvasLayer
         {
             Entry.Log("注入异常：" + ex);
         }
+    }
+
+    private static CardModel? FindCardModel(string className)
+    {
+        foreach (CardModel candidate in ModelDb.AllCards)
+        {
+            if (candidate.GetType().Name == className)
+                return candidate;
+        }
+        return null;
     }
 
     /// <summary>异步注入：手牌满时先弃掉最后一张（手牌上限 10）。</summary>
