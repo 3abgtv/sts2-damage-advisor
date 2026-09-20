@@ -558,8 +558,9 @@ public partial class AdvisorRoot : CanvasLayer
         if (_probeLine is not null)
         {
             string seq = CloneProbe.LastSequence;
-            _probeLine.Visible = !AdvisorSettings.Collapsed && seq.Length > 0;
-            _probeLine.Text = seq;
+            string compare = CloneProbe.ComparePlanText;
+            _probeLine.Visible = !AdvisorSettings.Collapsed && (seq.Length > 0 || compare.Length > 0);
+            _probeLine.Text = seq + (seq.Length > 0 && compare.Length > 0 ? "\n" : "") + compare;
         }
 #endif
 
@@ -590,6 +591,11 @@ public partial class AdvisorRoot : CanvasLayer
             myCreature.Block);
 
         TurnPlan plan = advice.Plan;
+
+#if !WORKSHOP
+        // 第三步第一刀：把主模型的推荐计划喂给新引擎重放，两边数字并排显示（差异即 bug）
+        CloneProbe.ComparePlan(me, state, advice);
+#endif
 
         string handKey = string.Join(",", hand.Select(SafeId));
         if (handKey != _lastLoggedHand && _handDumpCount < 25)

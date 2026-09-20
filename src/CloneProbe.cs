@@ -26,6 +26,61 @@ internal static class CloneProbe
     /// <summary>最近一次预测的"照这个顺序打"，给面板显示用（空串＝没有待验证的预测）。</summary>
     public static string LastSequence { get; private set; } = "";
 
+    /// <summary>
+    /// 第三步（与面板对接）第一刀：把**主模型的推荐计划**喂给新引擎重放一遍，
+    /// 两边算出来的数字并排显示 —— 不一致的地方就是其中一边的 bug。
+    /// 按 Id 在影子的手牌里找牌；找不到的（例如计划里生成的小刀）计入"未重放"。
+    /// </summary>
+    public static string ComparePlanText { get; private set; } = "";
+
+    public static void ComparePlan(Player me, CombatState state, TurnAdvice advice)
+    {
+        try
+        {
+            if (advice.Plan.Actions.Count == 0)
+            {
+                ComparePlanText = "";
+                return;
+            }
+
+            SimState sim = SimState.Capture(me, state, advice);
+            int hpBefore = sim.Foes.Sum(f => f.Hp);
+            int blockBefore = sim.PlayerBlock;
+            int skipped = 0;
+            foreach (PlannedAction action in advice.Plan.Actions)
+            {
+                int idx = -1;
+                for (int i = 0; i < sim.Hand.Count; i++)
+                {
+                    if (sim.Hand[i].Id == action.Card.Id)
+                    {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx < 0)
+                {
+                    skipped++;
+                    continue;
+                }
+                SimCommands.PlayCard(sim, idx, action.TargetIndex);
+            }
+
+            int damage = hpBefore - sim.Foes.Sum(f => f.Hp);
+            int block = sim.PlayerBlock - blockBefore;
+            int hpLoss = Math.Max(0, advice.IncomingDamage - sim.PlayerBlock);
+            int energyLeft = sim.PlayerEnergy;
+
+            ComparePlanText = $"新引擎重放推荐：伤害 {damage} / 格挡 +{block} / 掉血 {hpLoss} / 剩 {energyLeft} 能量"
+                            + $"　（主模型：伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）"
+                            + (skipped > 0 ? $"　[{skipped} 张未重放]" : "");
+        }
+        catch (Exception ex)
+        {
+            ComparePlanText = "新引擎重放异常：" + ex.GetType().Name;
+        }
+    }
+
     /// <summary>按下探测键时调用；不做任何推进、不修改真机状态。</summary>
     public static void Run(Player me, CombatState state)
     {
