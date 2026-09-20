@@ -288,21 +288,20 @@ internal static class SimCommands
             sim.NoDraw = true;
         }
 
-        // 爆发：这张牌如果是"会被额外打出一次"的技能牌，载荷整体翻倍
-        // （用打出前的计数判断；"每打出一张牌"类触发不翻倍 —— 与主模型同一约定）
+        // 爆发：先算"是否翻倍"（用打出前的计数），再消耗一层
         bool doubled = card.IsSkill && sim.DoubleSkillCount > 0;
         int times = doubled ? 2 : 1;
-        if (doubled)
-            parts.Add($"爆发：额外打出一次（载荷 ×2）");
         if (card.IsSkill)
             sim.DoubleSkillCount = Math.Max(0, sim.DoubleSkillCount - 1);
+
+        var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
+        if (doubled)
+            parts.Add("爆发：额外打出一次（载荷 ×2）");
         if (card.DoublesNextSkills > 0)
         {
             sim.DoubleSkillCount = card.DoublesNextSkills;
             parts.Add($"本回合接下来 {card.DoublesNextSkills} 张技能牌额外打出一次");
         }
-
-        var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
 
         // ① 小刀的精准加成 + X 费按投入能量放大 + 爆发翻倍
