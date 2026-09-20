@@ -38,6 +38,20 @@ internal sealed class SimState
     public int PlayerMaxEnergy { get; init; }
     public int PlayerStrength { get; init; }
     public int PlayerDexterity { get; init; }
+
+    // ---- 本回合已生效的能力（捕获时读玩家身上的常驻能力，打出的能力牌再往上累加）----
+    /// <summary>余像：每打出一张牌 +N 格挡（"每打出一张牌"类触发，不随爆发翻倍）。</summary>
+    public int BlockPerCard { get; set; }
+    /// <summary>精准：小刀 +N 伤害。</summary>
+    public int ShivBonus { get; set; }
+    /// <summary>涂毒：攻击造成未被格挡伤害时给目标 +N 中毒。</summary>
+    public int Envenom { get; set; }
+    /// <summary>腐蚀波：每抽一张牌 → 全体敌人 +N 中毒。</summary>
+    public int PoisonPerDraw { get; set; }
+    /// <summary>群蛇形态：每打出一张牌 → 随机一名敌人 N 伤害（模拟里近似为残血最少的）。</summary>
+    public int DamagePerCardPlayed { get; set; }
+    /// <summary>速行者：每抽一张牌 → 全体敌人 N 伤害。</summary>
+    public int DamagePerDraw { get; set; }
     /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
     public int RoundNumber { get; init; }
 
@@ -66,6 +80,12 @@ internal sealed class SimState
             PlayerMaxEnergy = pcs?.MaxEnergy ?? 0,
             PlayerStrength = DamageModel.ReadPowerAmount<StrengthPower>(self),
             PlayerDexterity = DamageModel.ReadPowerAmount<DexterityPower>(self),
+            BlockPerCard = DamageModel.ReadPowerAmount<AfterimagePower>(self),
+            ShivBonus = DamageModel.ReadPowerAmount<AccuracyPower>(self),
+            Envenom = DamageModel.ReadPowerAmount<EnvenomPower>(self),
+            PoisonPerDraw = DamageModel.ReadPowerAmount<CorrosiveWavePower>(self),
+            DamagePerCardPlayed = DamageModel.ReadPowerAmount<SerpentFormPower>(self),
+            DamagePerDraw = DamageModel.ReadPowerAmount<SpeedsterPower>(self),
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,
@@ -171,7 +191,8 @@ internal static class SimCommands
         return $"{foe.Index}号易伤 +{amount}（现在 {foe.Vulnerable}）";
     }
 
-    /// <summary>抽牌。抽牌堆不够时**洗弃牌堆**——但弃牌堆内容没抄进来，所以只能如实说明边界。</summary>
+    /// <summary>抽牌。抽牌堆不够时**洗弃牌堆**——但弃牌堆内容没抄进来，所以只能如实说明边界。
+    /// 每抽到一张牌会触发速行者（全体伤害）与腐蚀波（全体中毒）。</summary>
     public static string Draw(SimState sim, int count)
     {
         var parts = new List<string>();
@@ -185,14 +206,31 @@ internal static class SimCommands
             }
             sim.Hand.Add(sim.Draw.Dequeue());
             drawn++;
+
+            // 速行者 / 腐蚀波：每抽到一张牌就触发一次
+            foreach (SimFoe foe in sim.Foes.Where(f => f.Alive).ToList())
+            {
+                if (sim.DamagePerDraw > 0)
+                {
+                    int before = foe.Hp;
+                    DealDamage(foe, sim.DamagePerDraw);
+                    if (foe.Hp != before)
+                        parts.Add($"速行者 → {foe.Index}号 {before - foe.Hp} 伤");
+                    if (sim.Envenom > 0 && foe.Hp < before)
+                        ApplyPoison(foe, sim.Envenom);
+                }
+                if (sim.PoisonPerDraw > 0)
+                    foe.Poison += sim.PoisonPerDraw;
+            }
         }
         parts.Insert(0, $"抽 {drawn} 张（手牌 {sim.Hand.Count}，抽牌堆剩 {sim.Draw.Count}）");
         return string.Join("；", parts);
     }
 
     /// <summary>
-    /// 打出一张牌：扣能量 → 移出手牌 → 结算伤害 / 格挡 / 状态。
-    /// ⚠️ 伤害直接用卡面预览值（它已含力量/虚弱/易伤），只对本回合**新上的**易伤再 ×1.5。
+    /// 打出一张牌：扣能量 → 移出手牌 → 结算伤害（含精准加成、本回合新上的易伤）→ 涂毒 →
+    /// 卡面格挡/能量/抽牌/状态 → 能力牌自身的持续效果 → "每打出一张牌"类触发。
+    /// ⚠️ 伤害用卡面预览值（它已含力量/虚弱/易伤）；"每打出一张牌"类触发不随爆发翻倍（与主模型同一约定）。
     /// </summary>
     public static string PlayCard(SimState sim, int handIndex, int targetIndex)
     {
@@ -207,32 +245,67 @@ internal static class SimCommands
         sim.Hand.RemoveAt(handIndex);
 
         var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
+        List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
 
-        if (card.Damage > 0)
+        // ① 小刀的精准加成
+        decimal baseDamage = card.Damage;
+        if (baseDamage > 0 && SilentLogic.IsShivCard(card.ClassName) && sim.ShivBonus > 0)
         {
-            foreach (SimFoe foe in card.HitsAll ? sim.Foes.Where(f => f.Alive).ToList() : Targ(sim, targetIndex))
+            baseDamage += sim.ShivBonus;
+            parts.Add($"精准 +{sim.ShivBonus}");
+        }
+
+        // ② 伤害（先扣格挡再扣血；只对本回合新上的易伤 ×1.5）+ 涂毒
+        if (baseDamage > 0)
+        {
+            foreach (SimFoe foe in targets)
             {
-                decimal dmg = card.Damage * (foe.VulnerableNew ? 1.5m : 1m);
-                parts.Add($"{foe.Index}号 {DealDamage(foe, dmg)}");
+                int hpBefore = foe.Hp;
+                parts.Add($"{foe.Index}号 {DealDamage(foe, baseDamage * (foe.VulnerableNew ? 1.5m : 1m))}");
+                if (sim.Envenom > 0 && foe.Hp < hpBefore)
+                    parts.Add($"涂毒 → {ApplyPoison(foe, sim.Envenom)}");
             }
         }
 
+        // ③ 卡面格挡 / 能量 / 抽牌 / 状态
         if (card.Block > 0)
             parts.Add(GainBlock(sim, card.Block));
         if (card.EnergyGain > 0)
             parts.Add(GainEnergy(sim, card.EnergyGain));
         if (card.Draw > 0)
             parts.Add(Draw(sim, card.Draw));
-
-        foreach (SimFoe foe in card.HitsAll ? sim.Foes.Where(f => f.Alive).ToList() : Targ(sim, targetIndex))
+        foreach (SimFoe foe in targets)
         {
             if (card.Poison > 0) parts.Add(ApplyPoison(foe, card.Poison));
             if (card.Weak > 0) parts.Add(ApplyWeak(foe, card.Weak));
             if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable));
         }
 
+        // ④ 能力牌自身的持续效果
+        var gained = new List<string>();
+        if (card.BlockPerCard > 0) { sim.BlockPerCard += card.BlockPerCard; gained.Add($"余像 {card.BlockPerCard}"); }
+        if (card.ShivBonus > 0) { sim.ShivBonus += card.ShivBonus; gained.Add($"精准 {card.ShivBonus}"); }
+        if (card.Envenom > 0) { sim.Envenom += card.Envenom; gained.Add($"涂毒 {card.Envenom}"); }
+        if (card.PoisonPerDraw > 0) { sim.PoisonPerDraw += card.PoisonPerDraw; gained.Add($"腐蚀波 {card.PoisonPerDraw}"); }
+        if (card.DamagePerCardPlayed > 0) { sim.DamagePerCardPlayed += card.DamagePerCardPlayed; gained.Add($"群蛇形态 {card.DamagePerCardPlayed}"); }
+        if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw; gained.Add($"速行者 {card.DamagePerDraw}"); }
+        if (gained.Count > 0)
+            parts.Add("获得能力：" + string.Join("、", gained));
+
+        // ⑤ "每打出一张牌"类触发（含这张牌自己）
+        if (sim.BlockPerCard > 0)
+            parts.Add($"余像 → {GainBlock(sim, sim.BlockPerCard)}");
+        if (sim.DamagePerCardPlayed > 0)
+        {
+            SimFoe? victim = sim.Foes.Where(f => f.Alive).OrderBy(f => f.Hp).FirstOrDefault();
+            if (victim is not null)
+                parts.Add($"群蛇形态 → {victim.Index}号 {DealDamage(victim, sim.DamagePerCardPlayed)}");
+        }
+
         return string.Join("；", parts);
     }
+
+    private static List<SimFoe> AliveFoes(SimState sim) => sim.Foes.Where(f => f.Alive).ToList();
 
     private static List<SimFoe> Targ(SimState sim, int targetIndex)
     {
