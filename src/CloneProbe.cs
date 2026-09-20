@@ -370,7 +370,8 @@ internal static class CloneProbe
             {
                 Entry.Log($"[差分] ✓ 通过：实机终态与预测逐字一致 —— {actual}　（{_pendingLabel}）");
                 _hasPending = false;
-                LastSequence = "";
+                // 面板上直接把结论顶掉顺序提示：玩家不用去翻日志就知道这次对不对
+                LastSequence = $"✓ 已核对一致（{_pendingLabel}）　{actual}";
             }
             else if (actual != _beforeSignature && actual != _lastMismatchLog && _pendingMismatchLogs < 12)
             {
@@ -379,6 +380,8 @@ internal static class CloneProbe
                 _lastMismatchLog = actual;
                 _pendingMismatchLogs++;
                 Entry.Log($"[差分] 对照：预测 {_pendingSignature}；实机 {actual}　（{_pendingLabel}）");
+                // 注意：**不**在这里改面板 —— 打到一半（3 张里打完第 1 张）本来就不等于终态，
+                // 那不是错误。面板保持显示顺序提示，只在真正核对通过时才顶掉它。
             }
             // 其余情况保留待核对：打完牌后的下一次刷新就会命中
         }
