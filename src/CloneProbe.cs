@@ -46,25 +46,7 @@ internal static class CloneProbe
             SimState sim = SimState.Capture(me, state, advice);
             int hpBefore = sim.Foes.Sum(f => f.Hp);
             int blockBefore = sim.PlayerBlock;
-            int skipped = 0;
-            foreach (PlannedAction action in advice.Plan.Actions)
-            {
-                int idx = -1;
-                for (int i = 0; i < sim.Hand.Count; i++)
-                {
-                    if (sim.Hand[i].Id == action.Card.Id)
-                    {
-                        idx = i;
-                        break;
-                    }
-                }
-                if (idx < 0)
-                {
-                    skipped++;
-                    continue;
-                }
-                SimCommands.PlayCard(sim, idx, action.TargetIndex);
-            }
+            int skipped = ReplayPlan(sim, advice);
 
             int damage = hpBefore - sim.Foes.Sum(f => f.Hp);
             int block = sim.PlayerBlock - blockBefore;
@@ -272,14 +254,6 @@ internal static class CloneProbe
         return parts.Count == 0 ? "" : "（能力：" + string.Join(" ", parts) + "）";
     }
 
-    /// <summary>从一条命令说明里抠出"打出「X」"的牌名，用于拼面板上的顺序提示。</summary>
-    private static string RegexCard(string step)
-    {
-        int start = step.IndexOf('「');
-        int end = step.IndexOf('」');
-        return start >= 0 && end > start ? step.Substring(start + 1, end - start - 1) : step;
-    }
-
     /// <summary>敌人状态的紧凑显示（只显示非 0 的项）。</summary>
     private static string StatusText(SimFoe foe)
     {
@@ -319,26 +293,59 @@ internal static class CloneProbe
         return method?.Invoke(target, null);
     }
 
-    // ---- 差分验证闭环：上次预测 → 之后每次面板刷新都用实机状态核对 ----
-    private static string _pendingCard = "";
-    private static int _pendingFoeIndex;
-    private static int _pendingFoeHp;
-    private static int _pendingFoePoison;
-    private static int _pendingFoeVulnerable;
-    private static int _pendingFoeWeak;
-    private static int _pendingEnergy;
-    private static int _pendingPlayerBlock;
-    private static string _pendingFoeName = "";
+    // ---- 差分验证闭环：上次预测（整套推荐计划的终态指纹）→ 之后每次面板刷新都用实机状态核对 ----
+    private static string _pendingLabel = "";
+    private static string _pendingSignature = "";
+    private static string _beforeSignature = "";
     private static int _pendingRound;
     private static string _lastMismatchLog = "";
     private static int _pendingMismatchLogs;
     private static bool _hasPending;
 
+    /// <summary>把主模型的推荐计划喂给影子状态重放；返回没能重放的张数（计划里生成的小刀等）。</summary>
+    private static int ReplayPlan(SimState sim, TurnAdvice advice)
+    {
+        int skipped = 0;
+        foreach (PlannedAction action in advice.Plan.Actions)
+        {
+            int idx = -1;
+            for (int i = 0; i < sim.Hand.Count; i++)
+            {
+                if (sim.Hand[i].Id == action.Card.Id)
+                {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0)
+            {
+                skipped++;
+                continue;
+            }
+            SimCommands.PlayCard(sim, idx, action.TargetIndex);
+        }
+        return skipped;
+    }
+
+    /// <summary>终态指纹（影子）：回合 + 每只存活敌人（名字/血/中毒/易伤/虚弱）+ 我的（能量/格挡）。</summary>
+    private static string BuildSignature(SimState sim)
+        => "r" + sim.RoundNumber + "|"
+         + string.Join(",", sim.Foes.Where(f => f.Alive).Select(f => $"{f.Name}:{f.Hp}/{f.Poison}/{f.Vulnerable}/{f.Weak}"))
+         + "|m:" + sim.PlayerEnergy + "/" + sim.PlayerBlock;
+
+    /// <summary>终态指纹（实机）—— 与影子版同一个格式，才能直接比对。</summary>
+    private static string BuildSignature(Player me, CombatState state)
+        => "r" + state.RoundNumber + "|"
+         + string.Join(",", state.Enemies.Where(e => e.IsAlive).Select(e =>
+             $"{e.Name}:{e.CurrentHp}/" + DamageModel.ReadPowerAmount<PoisonPower>(e) + "/"
+             + DamageModel.ReadPowerAmount<VulnerablePower>(e) + "/" + DamageModel.ReadPowerAmount<WeakPower>(e)))
+         + "|m:" + (me.PlayerCombatState?.Energy ?? 0) + "/" + me.Creature.Block;
+
     /// <summary>
-    /// 用**当前实机状态**核对上一次预测。面板每次刷新都会调用 ——
-    /// 这样"照预测打完之后"的那一刻必然被抓到，不需要玩家掐时机按 F5。
+    /// 用**当前实机状态**核对上一次预测（整套推荐计划的终态）。面板每次刷新都会调用 ——
+    /// 这样"照计划打完最后一刻"必然被抓到，不需要玩家掐时机按 F5。
     ///
-    /// 判定：身份不符（换回合/换怪）→ 作废；六项全等 → ✓ 通过；否则**保留待核对**（等下一次刷新）。
+    /// 判定：回合变了（说明已经结束回合）→ 作废；签名逐字相等 → ✓ 通过；否则**保留待核对**（等下一次刷新）。
     /// </summary>
     public static void CheckPendingLive(Player me, CombatState state)
     {
@@ -346,53 +353,32 @@ internal static class CloneProbe
             return;
         try
         {
-            PlayerCombatState? pcs = me.PlayerCombatState;
-            if (pcs is null)
+            if (me.PlayerCombatState is null)
                 return;
 
-            int index = _pendingFoeIndex - 1;
-            if (index < 0 || index >= state.Enemies.Count)
+            if (state.RoundNumber != _pendingRound)
             {
-                Entry.Log($"[差分] 上一次预测（打「{_pendingCard}」）无法验证：目标已不在场");
-                _hasPending = false;
-                return;
-            }
-
-            Creature foe = state.Enemies[index];
-            if (state.RoundNumber != _pendingRound || foe.Name != _pendingFoeName)
-            {
-                Entry.Log($"[差分] 上一次预测无法验证：状态已推进（预测时第 {_pendingRound} 回合的 {_pendingFoeName}，"
-                          + $"现在是第 {state.RoundNumber} 回合的 {foe.Name}）");
+                Entry.Log($"[差分] 上一次预测无法验证：已推进到第 {state.RoundNumber} 回合"
+                          + $"（预测时第 {_pendingRound} 回合　{_pendingLabel}）");
                 _hasPending = false;
                 LastSequence = "";
                 return;
             }
 
-            int poison = DamageModel.ReadPowerAmount<PoisonPower>(foe);
-            int vulnerable = DamageModel.ReadPowerAmount<VulnerablePower>(foe);
-            int weak = DamageModel.ReadPowerAmount<WeakPower>(foe);
-            if (foe.CurrentHp == _pendingFoeHp && poison == _pendingFoePoison && vulnerable == _pendingFoeVulnerable
-                && weak == _pendingFoeWeak && pcs.Energy == _pendingEnergy && me.Creature.Block == _pendingPlayerBlock)
+            string actual = BuildSignature(me, state);
+            if (actual == _pendingSignature)
             {
-                Entry.Log($"[差分] ✓ 通过：实机与预测一致（第 {state.RoundNumber} 回合打「{_pendingCard}」→ {foe.Name} "
-                          + $"{foe.CurrentHp}血/中毒{poison}/易伤{vulnerable}/虚弱{weak}、我 {pcs.Energy}能量/{me.Creature.Block}格挡）"
-                          + " —— 差分验证链闭环");
+                Entry.Log($"[差分] ✓ 通过：实机终态与预测逐字一致 —— {actual}　（{_pendingLabel}）");
                 _hasPending = false;
                 LastSequence = "";
             }
-            else
+            else if (actual != _beforeSignature && actual != _lastMismatchLog && _pendingMismatchLogs < 12)
             {
                 // 还没全等：把两边打出来。**按值去重**（同一组实机值只记一次）而不是按次数限流 ——
                 // 否则"出牌前"那几次刷新会把额度用光，真正有价值的"出牌后"反而看不到。
-                string actual = $"{foe.CurrentHp}血/中毒{poison}/易伤{vulnerable}/虚弱{weak}/我 {pcs.Energy}能量/{me.Creature.Block}格挡";
-                if (actual != _lastMismatchLog && _pendingMismatchLogs < 12)
-                {
-                    _lastMismatchLog = actual;
-                    _pendingMismatchLogs++;
-                    Entry.Log($"[差分] 对照：预测「{_pendingCard}」→ {_pendingFoeHp}血/中毒{_pendingFoePoison}"
-                              + $"/易伤{_pendingFoeVulnerable}/虚弱{_pendingFoeWeak}/我 {_pendingEnergy}能量/{_pendingPlayerBlock}格挡；"
-                              + $"实机 → {actual}");
-                }
+                _lastMismatchLog = actual;
+                _pendingMismatchLogs++;
+                Entry.Log($"[差分] 对照：预测 {_pendingSignature}；实机 {actual}　（{_pendingLabel}）");
             }
             // 其余情况保留待核对：打完牌后的下一次刷新就会命中
         }
@@ -403,17 +389,12 @@ internal static class CloneProbe
         }
     }
 
-        private static void SavePending(CardEffect card, SimFoe foe, SimState sim)
+    /// <summary>记下一次待核对的预测（整套推荐计划的终态）。</summary>
+    private static void SavePending(string label, string before, SimState sim)
     {
-        _pendingCard = card.Name;
-        _pendingFoeIndex = foe.Index;
-        _pendingFoeHp = foe.Hp;
-        _pendingFoePoison = foe.Poison;
-        _pendingFoeVulnerable = foe.Vulnerable;
-        _pendingFoeWeak = foe.Weak;
-        _pendingEnergy = sim.PlayerEnergy;
-        _pendingPlayerBlock = sim.PlayerBlock;
-        _pendingFoeName = foe.Name;
+        _pendingLabel = label;
+        _beforeSignature = before;
+        _pendingSignature = BuildSignature(sim);
         _pendingRound = sim.RoundNumber;
         _pendingMismatchLogs = 0;
         _lastMismatchLog = "";
@@ -421,10 +402,8 @@ internal static class CloneProbe
     }
 
     /// <summary>
-    /// 第二阶段第一刀：把 live 状态捕获成影子状态，在影子上打一张单体攻击牌，
-    /// 输出一条"**你可以在游戏里实际打一张来核对**"的预测，并在下次按 F5 时自动核对。
-    ///
-    /// 这是差分验证链 —— 模拟结果 vs 实机结果，后面每接一张牌都走这个方式。
+    /// F5：把**主模型的整套推荐**喂给新引擎重放，面板上给出完整顺序与预期终态，
+    /// 并把终态登记为待核对的预测 —— 之后每次面板刷新自动比对，不需要玩家掐时机。
     /// </summary>
     private static string SimSelfCheck(Player me, CombatState state)
     {
@@ -448,83 +427,29 @@ internal static class CloneProbe
                 me.Creature.CurrentHp,
                 me.Creature.Block);
 
+            if (advice.Plan.Actions.Count == 0)
+            {
+                LastSequence = "";
+                return "主模型没给出推荐（本回合没有可打的有效牌）";
+            }
+
+            string label = string.Join(" → ", advice.Plan.Actions.Select(a => a.Card.Name));
+            string before = BuildSignature(me, state);
             SimState sim = SimState.Capture(me, state, advice);
-            if (sim.Foes.Count == 0)
-                return "影子状态：没有存活敌人，跳过";
+            int skipped = ReplayPlan(sim, advice);
 
-            // 优先挑**能力牌**来测（打完之后再补打一张，持续效果才看得见）；没有就测状态牌，再没有测攻击牌
-            int idx = -1;
-            string kind = "";
-            for (int i = 0; i < sim.Hand.Count; i++)
-            {
-                CardEffect c = sim.Hand[i];
-                bool grantsPower = c.BlockPerCard > 0 || c.ShivBonus > 0 || c.Envenom > 0
-                                   || c.PoisonPerDraw > 0 || c.DamagePerCardPlayed > 0 || c.DamagePerDraw > 0;
-                if (c.Supported && grantsPower && c.Cost <= sim.PlayerEnergy)
-                {
-                    idx = i;
-                    kind = "能力牌";
-                    break;
-                }
-            }
-            if (idx < 0)
-            {
-                for (int i = 0; i < sim.Hand.Count; i++)
-                {
-                    CardEffect c = sim.Hand[i];
-                    if (c.Supported && !c.HitsAll && (c.Poison > 0 || c.Weak > 0 || c.Vulnerable > 0) && c.Cost <= sim.PlayerEnergy)
-                    {
-                        idx = i;
-                        kind = "状态牌";
-                        break;
-                    }
-                }
-            }
-            if (idx < 0)
-            {
-                for (int i = 0; i < sim.Hand.Count; i++)
-                {
-                    CardEffect c = sim.Hand[i];
-                    if (c.Supported && c.IsAttack && c.Damage > 0 && !c.HitsAll && c.Cost <= sim.PlayerEnergy)
-                    {
-                        idx = i;
-                        kind = "攻击牌";
-                        break;
-                    }
-                }
-            }
-            if (idx < 0)
-                return $"影子状态已捕获（我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量，敌 {sim.Foes.Count} 只，手牌 {sim.Hand.Count} 张），但手里没有可测的牌";
-
-            SimFoe foe = sim.Foes[0];
-            CardEffect predicted = sim.Hand[idx];   // 记下要预测的这张牌（PlayCard 会把它移出手牌）
-            string before = $"我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量{PowerText(sim)}；"
-                          + $"敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡{StatusText(foe)}";
-            var steps = new List<string> { SimCommands.PlayCard(sim, idx, foe.Index) };
-
-            // 能力牌：再补打一张格挡牌，让"余像这类每张牌 +N"的持续效果体现在数字上
-            if (kind == "能力牌")
-            {
-                int second = -1;
-                for (int i = 0; i < sim.Hand.Count; i++)
-                {
-                    if (sim.Hand[i].Block > 0 && sim.Hand[i].Cost <= sim.PlayerEnergy)
-                    {
-                        second = i;
-                        break;
-                    }
-                }
-                if (second >= 0)
-                    steps.Add(SimCommands.PlayCard(sim, second, foe.Index));
-            }
-
-            SavePending(predicted, foe, sim);
+            SavePending(label, before, sim);
             // 面板上直接显示"照这个顺序打"，省得去翻日志
-            LastSequence = "探测：照这个顺序打 → " + string.Join(" → ", steps.Select(s => RegexCard(s)))
-                         + $"（预期 我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡）";
-            return $"影子状态已捕获（{before}）→ {string.Join(" → ", steps)} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡{StatusText(foe)}，"
-                 + $"我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡（{kind}，手牌{sim.Hand.Count}/抽牌堆{sim.Draw.Count}）"
-                 + " ← 实际照这个顺序打（打完不用按 F5，面板会自动核对）";
+            LastSequence = "推荐顺序：" + label
+                         + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）"
+                         + (skipped > 0 ? $"　[{skipped} 张未能重放]" : "");
+
+            string foes = string.Join("、", sim.Foes.Where(f => f.Alive)
+                .Select(f => $"{f.Index}号 {f.Hp}血/{f.Block}格挡{StatusText(f)}"));
+            return $"重放主模型推荐：{label}　→ 打完 敌 {foes}；"
+                 + $"我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡/{sim.PlayerHp}血{PowerText(sim)}"
+                 + (skipped > 0 ? $"　（{skipped} 张未能重放：计划里生成的小刀等）" : "")
+                 + " ← 照这个顺序打，面板会自动核对终态";
         }
         catch (Exception ex)
         {
