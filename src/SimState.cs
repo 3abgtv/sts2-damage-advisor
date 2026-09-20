@@ -54,6 +54,10 @@ internal sealed class SimState
     public int DamagePerDraw { get; set; }
     /// <summary>融入暗影：本回合获得的格挡翻倍（含余像给的格挡）。</summary>
     public bool DoubleBlock { get; set; }
+    /// <summary>子弹时间：本回合手牌免费打出。</summary>
+    public bool HandFree { get; set; }
+    /// <summary>子弹时间：本回合不能再抽牌。</summary>
+    public bool NoDraw { get; set; }
     /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
     public int RoundNumber { get; init; }
 
@@ -95,6 +99,11 @@ internal sealed class SimState
             DamagePerDraw = DamageModel.ReadPowerAmount<SpeedsterPower>(self),
             // 融入暗影若已被打出（本回合内），捕获时也要带上它的翻倍标记
             DoubleBlock = DamageModel.ReadPowerAmount<ShadowmeldPower>(self) > 0,
+            // 子弹时间：游戏侧存的是 NoDrawPower（"本回合不能再抽牌"）；
+            // "手牌免费"没有独立状态 —— 它体现在卡面费用本身变成 0（费用读的是 GetResolved），
+            // 所以这里只要认 NoDraw 就够了，费用不用再特殊处理
+            NoDraw = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
+            HandFree = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,
@@ -258,7 +267,9 @@ internal static class SimCommands
         if (handIndex < 0 || handIndex >= sim.Hand.Count)
             return "手牌索引越界";
         CardEffect card = sim.Hand[handIndex];
-        int cost = card.IsXCost ? sim.PlayerEnergy : card.Cost;
+        // 子弹时间：手牌免费（X 费仍按剩余能量算）。注意用**打出这张牌之前**的 HandFree ——
+        // 打出子弹时间自己仍要付它的费用（与主模型一致）
+        int cost = card.IsXCost ? sim.PlayerEnergy : (sim.HandFree ? 0 : card.Cost);
         if (cost > sim.PlayerEnergy)
             return $"能量不足（需要 {cost}，只有 {sim.PlayerEnergy}）";
 
@@ -268,6 +279,12 @@ internal static class SimCommands
         // 融入暗影：先置位再结算，这样"打出它自己"也翻倍（与主模型一致）
         if (card.DoubleBlock)
             sim.DoubleBlock = true;
+        // 子弹时间：置位后本回合剩下的牌免费、且不能再抽牌
+        if (card.HandFree)
+        {
+            sim.HandFree = true;
+            sim.NoDraw = true;
+        }
 
         var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
@@ -328,9 +345,14 @@ internal static class SimCommands
         if (card.Discard > 0)
             DiscardCards(sim, card.Discard, parts);
 
-        // ⑥ 抽牌
+        // ⑥ 抽牌（子弹时间之后本回合不能再抽）
         if (card.Draw > 0)
-            parts.Add(Draw(sim, card.Draw));
+        {
+            if (sim.NoDraw)
+                parts.Add($"牌面要求抽 {card.Draw} 张，但本回合已不能再抽（子弹时间）");
+            else
+                parts.Add(Draw(sim, card.Draw));
+        }
 
         // ⑦ 生成小刀
         if (card.Shivs > 0)
@@ -410,7 +432,7 @@ internal static class SimCommands
             sub.Add(GainBlock(sim, discarded.Block));
         if (discarded.EnergyGain > 0)
             sub.Add(GainEnergy(sim, discarded.EnergyGain));
-        if (discarded.Draw > 0)
+        if (discarded.Draw > 0 && !sim.NoDraw)
             sub.Add(Draw(sim, discarded.Draw));
         if (discarded.Shivs > 0)
             AddShivs(sim, discarded.Shivs, sub);
