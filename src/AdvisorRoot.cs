@@ -489,6 +489,7 @@ public partial class AdvisorRoot : CanvasLayer
         TurnAdvice advice = DamageModel.Solve(
             hand,
             pcs.DrawPile.Cards,
+            pcs.ExhaustPile.Cards,
             pcs.Energy,
             state.Enemies,
             allies,

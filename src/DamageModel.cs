@@ -125,12 +125,16 @@ internal sealed record CardEffect
     public bool RepeatsOnKill { get; init; }
     /// <summary>刀刃陷阱：把消耗牌堆里的 N 张小刀对同一目标打出（N 来自卡面 CalculatedShivs）。</summary>
     public int ExhaustShivs { get; init; }
+    /// <summary>那批小刀的伤害（优先取消耗堆里真实小刀的卡面值，升级版也在那里）。</summary>
+    public decimal ExhaustShivDamage { get; init; }
     /// <summary>手上技法：给手牌中的一张技能牌添加奇巧。</summary>
     public bool GrantsSlyToSkill { get; init; }
     /// <summary>触媒：中毒额外触发 N 次（影响"中毒先手击杀"判定）。</summary>
     public int GrantsAccelerant { get; init; }
     /// <summary>爆发：本回合接下来 N 张技能牌额外打出一次。</summary>
     public int DoublesNextSkills { get; init; }
+    /// <summary>逃脱计划：只有抽到技能牌时才给的格挡（抽牌堆顺序在搜索里是已知的，出牌时判定）。</summary>
+    public int BlockIfSkillDrawn { get; init; }
 
 
 
@@ -293,6 +297,7 @@ internal static class DamageModel
     public static TurnAdvice Solve(
         IReadOnlyList<CardModel> hand,
         IReadOnlyList<CardModel> drawPile,
+        IReadOnlyList<CardModel> exhaustPile,
         int energy,
         IReadOnlyList<Creature> enemiesInOrder,
         IReadOnlyList<Creature> allies,
@@ -345,8 +350,10 @@ internal static class DamageModel
 
         // 小刀伤害：优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱/缩小等修正），
         // 都没有小刀时退回手算。必须在 Analyze 之前算出来——刀刃陷阱的伤害 = 张数 × 小刀伤害。
-        decimal shivDamage = FindShivDamage(hand, drawPile, sample)
+        decimal shivDamage = FindShivDamage(sample, hand, drawPile)
             ?? BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0);
+        // 刀刃陷阱打出的小刀来自**消耗堆**（升级版的升级小刀也在那里），单独取一次
+        decimal exhaustShivDamage = FindShivDamage(sample, exhaustPile) ?? shivDamage;
 
         var analyzeContext = new AnalyzeContext
         {
@@ -354,6 +361,7 @@ internal static class DamageModel
             Enemies = enemies,
             DrawPileCount = drawPile.Count,
             ShivDamage = shivDamage,
+            ExhaustShivDamage = exhaustShivDamage,
         };
 
         List<CardEffect> handEffects = hand.Select(c => Analyze(c, analyzeContext)).ToList();
@@ -392,18 +400,21 @@ internal static class DamageModel
         };
     }
 
-    /// <summary>手牌/抽牌堆里第一张真实小刀的伤害（游戏预览值）；都没有小刀时返回 null。</summary>
-    private static decimal? FindShivDamage(IReadOnlyList<CardModel> hand, IReadOnlyList<CardModel> drawPile, Creature? target)
+    /// <summary>在给定的牌堆里找第一张真实小刀，取其卡面预览值当伤害；找不到返回 null。</summary>
+    private static decimal? FindShivDamage(Creature? target, params IReadOnlyList<CardModel>[] piles)
     {
         if (target is null)
             return null;
-        foreach (CardModel card in hand.Concat(drawPile))
+        foreach (IReadOnlyList<CardModel> pile in piles)
         {
-            if (!SilentLogic.IsShivCard(card.GetType().Name))
-                continue;
-            decimal damage = EstimateDamage(card, target);
-            if (damage > 0m)
-                return damage;
+            foreach (CardModel card in pile)
+            {
+                if (!SilentLogic.IsShivCard(card.GetType().Name))
+                    continue;
+                decimal damage = EstimateDamage(card, target);
+                if (damage > 0m)
+                    return damage;
+            }
         }
         return null;
     }
@@ -413,8 +424,10 @@ internal static class DamageModel
         public Creature? Target { get; init; }
         public required IReadOnlyList<SimEnemy> Enemies { get; init; }
         public required int DrawPileCount { get; init; }
-        /// <summary>小刀伤害（刀刃陷阱要按张数乘以它）。</summary>
+        /// <summary>生成小刀的伤害（小刀模板用）。</summary>
         public required decimal ShivDamage { get; init; }
+        /// <summary>刀刃陷阱打出的小刀伤害（取消耗堆里的真实小刀）。</summary>
+        public required decimal ExhaustShivDamage { get; init; }
     }
 
     private sealed class SearchState
@@ -654,12 +667,13 @@ internal static class DamageModel
                 }
             }
 
-            // 刀刃陷阱：把消耗牌堆里的 N 张小刀对同一目标打出（张数取卡面 CalculatedShivs）
-            if (played.ExhaustShivs > 0)
-                damage = played.ExhaustShivs * Shiv.Damage;
-
             // 爆发：技能牌额外打出一次 → 这张牌自己的载荷整体翻倍
             damage *= times;
+
+            // 刀刃陷阱：打出消耗堆里的那批小刀。⚠️ 放在翻倍之后——第一次打出后消耗堆就空了，
+            // 所以它不随爆发翻倍（否则会凭空多算一遍小刀）。伤害取消耗堆里真实小刀的卡面值。
+            if (played.ExhaustShivs > 0)
+                damage = played.ExhaustShivs * played.ExhaustShivDamage;
 
             // 手上技法：给手牌里"弃掉最划算"的那张技能牌加奇巧（爆发翻倍时加两张）
             for (int t = 0; t < times && played.GrantsSlyToSkill; t++)
@@ -692,7 +706,7 @@ internal static class DamageModel
                 if (played.HitsAll)
                 {
                     int aliveBefore = next.Enemies.Count(e => e.Alive);
-                    ApplyDamageToAll(next, damage, played.IsAttack);
+                    ApplyDamageToAll(next, damage, played.IsAttack, played.Hits);
                     // 回响斩击：每有一名敌人被击杀，就重复一次全体伤害
                     if (played.RepeatsOnKill)
                     {
@@ -702,7 +716,7 @@ internal static class DamageModel
                             if (aliveNow >= aliveBefore || aliveNow == 0)
                                 break;
                             aliveBefore = aliveNow;
-                            ApplyDamageToAll(next, damage, played.IsAttack);
+                            ApplyDamageToAll(next, damage, played.IsAttack, played.Hits);
                         }
                     }
                 }
@@ -714,7 +728,7 @@ internal static class DamageModel
                         int before = target.Hp;
                         ApplyDamage(next, target, damage * DamageMultiplier(next, target, played.IsAttack));
                         if (target.Hp < before)
-                            ApplyEnvenom(next, target);
+                            ApplyEnvenom(next, target, played.Hits);
                     }
                 }
             }
@@ -816,8 +830,14 @@ internal static class DamageModel
             }
 
             // 抽牌（子弹时间后本回合不能再抽）；爆发翻倍时抽两次
-            if (!next.NoDraw && played.Draw > 0)
-                HandleDraws(next, played.Draw * times);
+            List<CardEffect> drawn = (!next.NoDraw && played.Draw > 0)
+                ? HandleDraws(next, played.Draw * times)
+                : new List<CardEffect>();
+
+            // 逃脱计划：只有抽到技能牌才给那 3 点格挡（抽牌堆顺序在搜索里已知，能算准）
+            if (played.BlockIfSkillDrawn > 0 && drawn.Any(c => c.IsSkill))
+                next.Block += (played.BlockIfSkillDrawn + state.Dex)
+                              * (state.DoubleBlock || played.DoubleBlock ? 2 : 1);
 
             // 生成小刀
             for (int s = 0; s < played.Shivs * times; s++)
@@ -917,12 +937,14 @@ internal static class DamageModel
             {
                 if (discarded.HitsAll)
                 {
-                    foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
-                        ApplyDamage(state, enemy, discarded.Damage * DamageMultiplier(state, enemy, discarded.IsAttack));
+                    ApplyDamageToAll(state, discarded.Damage, discarded.IsAttack, discarded.Hits);
                 }
                 else if (target is not null)
                 {
+                    int before = target.Hp;
                     ApplyDamage(state, target, discarded.Damage * DamageMultiplier(state, target, discarded.IsAttack));
+                    if (target.Hp < before)
+                        ApplyEnvenom(state, target, discarded.Hits);
                 }
             }
 
@@ -965,13 +987,16 @@ internal static class DamageModel
         private CardEffect NormalizeShiv(SearchState state, CardEffect shiv)
             => state.ShivsHitAll && SilentLogic.IsShivCard(shiv.ClassName) ? ShivAll : shiv;
 
-        /// <summary>抽牌（含腐蚀波/速行者的抽牌副作用）。</summary>
-        private void HandleDraws(SearchState state, int count)
+        /// <summary>抽牌（含腐蚀波/速行者的抽牌副作用），返回这一批实际抽到的牌。</summary>
+        private List<CardEffect> HandleDraws(SearchState state, int count)
         {
+            var drawn = new List<CardEffect>();
             for (int d = 0; d < count && state.Draw.Count > 0; d++)
             {
                 // 翻出来的小刀也要过一遍模板（刀扇之后应该是打全体的那版）
-                state.Hand.Add(NormalizeShiv(state, state.Draw.Dequeue()));
+                CardEffect card = NormalizeShiv(state, state.Draw.Dequeue());
+                state.Hand.Add(card);
+                drawn.Add(card);
 
                 if (state.PoisonPerDraw > 0)
                 {
@@ -985,13 +1010,17 @@ internal static class DamageModel
                         ApplyDamage(state, enemy, state.DamagePerDraw);
                 }
             }
+            return drawn;
         }
 
-        /// <summary>涂毒：攻击造成伤害时给目标叠中毒。</summary>
-        private static void ApplyEnvenom(SearchState state, SimEnemy target)
+        /// <summary>
+        /// 涂毒：攻击造成未被格挡的伤害时叠中毒。描述是"每有**一次**攻击"→ 多段攻击按**段数**叠
+        /// （匕首雨 2 段、连续反弹 4 段都算多段）。
+        /// </summary>
+        private static void ApplyEnvenom(SearchState state, SimEnemy target, int hits)
         {
             if (state.Envenom > 0)
-                target.Poison += state.Envenom;
+                target.Poison += state.Envenom * Math.Max(1, hits);
         }
 
         /// <summary>中毒伤害：无视格挡。</summary>
@@ -1018,15 +1047,15 @@ internal static class DamageModel
             return multiplier;
         }
 
-        /// <summary>对全体存活敌人结算一次伤害（含涂毒）。</summary>
-        private static void ApplyDamageToAll(SearchState state, decimal damage, bool isAttack)
+        /// <summary>对全体存活敌人结算一次伤害（含涂毒，按段数）。</summary>
+        private static void ApplyDamageToAll(SearchState state, decimal damage, bool isAttack, int hits)
         {
             foreach (SimEnemy enemy in state.Enemies.Where(e => e.Alive).ToList())
             {
                 int before = enemy.Hp;
                 ApplyDamage(state, enemy, damage * DamageMultiplier(state, enemy, isAttack));
                 if (enemy.Hp < before)
-                    ApplyEnvenom(state, enemy);
+                    ApplyEnvenom(state, enemy, hits);
             }
         }
 
@@ -1326,6 +1355,14 @@ internal static class DamageModel
         // 格挡：取卡面预览值（含敏捷/遗物等修正）。取基础值会让"本场已有的敏捷"整个漏掉，
         // 导致格挡低估、预计掉血偏悲观、多推荐一张防御牌。
         int block = ReadPreviewByType(card, v => v is BlockVar) ?? (int)Math.Floor(ReadPreview(card, "Block"));
+        // 逃脱计划：格挡是"抽到技能牌才给"——出牌时按实际抽到的牌判定（抽牌堆顺序在搜索里已知），
+        // 所以先把它从这里的格挡摘出去，否则保命侧会无提高估 3 点。
+        int blockIfSkillDrawn = 0;
+        if (SilentLogic.BlockOnlyIfSkillDrawn(className) && block > 0)
+        {
+            blockIfSkillDrawn = block;
+            block = 0;
+        }
         if (SilentLogic.BlockFromEnemyPoison(className) && context is not null)
         {
             // 只算存活敌人；搜索内部每次出牌都会实时重算（见 BlockGain）
@@ -1427,8 +1464,9 @@ internal static class DamageModel
         int exhaustShivs = SilentLogic.PlaysExhaustShivs(className)
             ? (int)Math.Floor(ReadPreview(card, "CalculatedShivs"))
             : 0;
+        decimal exhaustShivDamage = exhaustShivs > 0 ? (context?.ExhaustShivDamage ?? 0m) : 0m;
         if (exhaustShivs > 0)
-            damage = exhaustShivs * (context?.ShivDamage ?? 0m);
+            damage = exhaustShivs * exhaustShivDamage;
         bool grantsSlyToSkill = SilentLogic.GrantsSlyToSkill(className);
         int grantsAccelerant = SilentLogic.GrantsAccelerant(className) ? ReadInt(card, "Accelerant") : 0;
         int doublesNextSkills = SilentLogic.DoublesNextSkills(className)
@@ -1469,7 +1507,7 @@ internal static class DamageModel
             || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll
             || grantsTracking || grantsIntangible != 0 || strangle != 0 || nextSkillFree
             || needsPoisonedTarget || repeatsOnKill || exhaustShivs != 0 || grantsSlyToSkill
-            || grantsAccelerant != 0 || doublesNextSkills != 0;
+            || grantsAccelerant != 0 || doublesNextSkills != 0 || blockIfSkillDrawn != 0;
 
 
 
@@ -1558,6 +1596,8 @@ internal static class DamageModel
             NeedsPoisonedTarget = needsPoisonedTarget,
             RepeatsOnKill = repeatsOnKill,
             ExhaustShivs = exhaustShivs,
+            ExhaustShivDamage = exhaustShivDamage,
+            BlockIfSkillDrawn = blockIfSkillDrawn,
             GrantsSlyToSkill = grantsSlyToSkill,
             GrantsAccelerant = grantsAccelerant,
             DoublesNextSkills = doublesNextSkills,

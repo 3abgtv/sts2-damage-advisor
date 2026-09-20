@@ -1,0 +1,77 @@
+parsed 91 cards
+keyword hits: 37
+
+余像       | 你每打出一张牌，都获得{AfterimagePower:diff()}点格挡。
+         | vars=AfterimagePower=1
+刀刃陷阱     | 将你消耗牌堆中的所有小刀{IfUpgraded:show:升级然后|}对一名敌人打出。{InCombat: （打出{CalculatedShivs:diff()}张小刀）|}
+         | vars=CalculationBase=0,CalculationExtra=1,CalculatedShivs=0
+华丽收场     | 只有当你的抽牌堆中没有牌时才能打出。对所有敌人造成{Damage:diff()}点伤害。
+         | vars=Damage=60
+咕嘟冒泡     | 如果敌方拥有中毒，则给予{PoisonPower:diff()}层中毒。
+         | vars=PoisonPower=9
+回响斩击     | 对所有敌人造成{Damage:diff()}点伤害。 每有一名敌人被击杀，就重复此效果。
+         | vars=Damage=10
+夜魇       | 选择一张牌。 在下个回合将这张牌的3张复制品加入你的手牌。
+         | vars=
+夹击       | 一名敌人在本回合受到的来自其他玩家的攻击伤害翻倍。
+         | vars=
+子弹时间     | 你在本回合内不能再抽牌。你手牌中的所有牌在本回合免费打出。
+         | vars=
+尖啸       | 所有敌人在本回合失去{StrengthLoss:diff()}点力量。
+         | vars=StrengthLoss=6
+幻影之刃     | 小刀获得保留。 你在每回合打出的第一张小刀额外造成{PhantomBladesPower:diff()}点伤害。
+         | vars=PhantomBladesPower=9
+幽魂形态     | 获得{IntangiblePower:diff()}无实体。 在你的回合开始时，失去{WraithFormPower:diff()}点敏捷。
+         | vars=IntangiblePower=2,WraithFormPower=1
+弹跳药瓶     | 随机给予敌人{PoisonPower:diff()}层中毒{Repeat:diff()}次。
+         | vars=PoisonPower=3,Repeat=3
+暗影步      | 丢弃所有手牌。 在下个回合，你所有的攻击伤害翻倍。
+         | vars=Cards=3
+涂毒       | 每有一次攻击造成未被格挡的伤害，就给予{EnvenomPower:diff()}层中毒。
+         | vars=EnvenomPower=1
+爆发       | 在这个回合，你打出的下{Skills:choose(1):一|{:diff()}}张技能牌会被额外打出一次。
+         | vars=Skills=1
+狩猎       | 造成{Damage:diff()}点伤害。 斩杀时，额外获得一次卡牌奖励。
+         | vars=Damage=10
+猎杀者      | 造成{Damage:diff()}点伤害。 在下个回合抽2张牌。
+         | vars=Damage=15
+精准       | 小刀额外造成{AccuracyPower:diff()}点伤害。
+         | vars=AccuracyPower=4
+精密瞄准     | 造成{Damage:diff()}点伤害。 你在本回合中每打出过一张技能牌，其耗能减少1{energyPrefix:energyIcons(1)}。
+         | vars=Damage=15
+精确切击     | 造成{CalculatedDamage:diff()}点伤害。 你的手牌中每有一张牌，此牌的伤害就降低{ExtraDamage:inverseDiff()}点。
+         | vars=CalculationBase=13,ExtraDamage=2,CalculatedDamage=13
+紧勒       | 造成{Damage:diff()}点伤害。 你在这个回合内每出一张牌，该名敌人都会失去{StranglePower:diff()}点生命。
+         | vars=Damage=8,StranglePower=2
+终结技      | 在这个回合内每打出过一张攻击牌，就造成{Damage:diff()}点伤害一次。{InCombat: （攻击{CalculatedHits:diff()}次）|}
+         | vars=Damage=6,CalculationBase=0,CalculationExtra=1,CalculatedHits=0
+群蛇形态     | 你每打出一张牌，就对随机一名敌人造成{SerpentFormPower:diff()}点伤害。
+         | vars=SerpentFormPower=4
+腐蚀波      | 打出此牌后，你在本回合每抽到一张牌，就给予所有敌人{CorrosiveWave:diff()}层中毒。
+         | vars=CorrosiveWave=2
+萎靡       | 敌人失去X{IfUpgraded:show:+1}点力量。给予X{IfUpgraded:show:+1}层虚弱。
+         | vars=
+融入暗影     | 本回合你获得的格挡值翻倍。
+         | vars=Power=1
+触媒       | 中毒会额外触发{Accelerant:diff()}次。
+         | vars=Accelerant=1
+谋划专家     | 当你打出技能牌时，该牌获得奇巧。
+         | vars=
+谋杀       | 造成{CalculatedDamage:diff()}点伤害。 你在本场战斗中每抽过一张牌，此牌就额外造成{ExtraDamage:diff()}点伤害。
+         | vars=CalculationBase=1,ExtraDamage=1,CalculatedDamage=1
+连续反弹     | 随机对敌人造成{Damage:diff()}点伤害{Repeat:diff()}次。
+         | vars=Damage=3,Repeat=4
+逃脱计划     | 抽1张牌。 如果抽到的是技能牌，则获得{Block:diff()}点格挡。
+         | vars=Block=3
+速行者      | 每当你在回合进行中抽到一张牌时，对所有敌人造成{SpeedsterPower:diff()}点伤害。
+         | vars=SpeedsterPower=2
+钢铁风暴     | 丢弃所有手牌。 每丢弃一张牌，就将一张{IfUpgraded:show:小刀+|小刀}添加至你的手牌。
+         | vars=
+铭记死亡     | 造成{CalculatedDamage:diff()}点伤害。 本回合每丢弃过一张牌，则增加{ExtraDamage:diff()}点额外伤害。
+         | vars=CalculationBase=9,ExtraDamage=4,CalculatedDamage=9
+闪躲翻滚     | 获得{Block:diff()}点格挡。 在下个回合，获得{Block:diff()}点格挡。
+         | vars=Block=4
+飞镖       | 手牌中每有一张技能牌，造成{Damage:diff()}点伤害。{InCombat: （攻击{CalculatedHits:diff()}次）|}
+         | vars=Damage=5,CalculationBase=0,CalculationExtra=1,CalculatedHits=0
+鬼祟       | 每当其他玩家攻击一名敌人时，获得{SneakyPower:diff()}点格挡。
+         | vars=SneakyPower=1

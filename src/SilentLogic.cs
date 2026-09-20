@@ -152,7 +152,7 @@ internal static class SilentLogic
         "Pounce" => "下一张技能牌耗能变 0",
         "BladeOfInk" => "生成墨影小刀（按普通小刀算，可能偏低）",
         "TheHunt" => "斩杀的额外卡牌奖励在战斗结算时，不影响本回合",
-        "KnifeTrap" => "打出消耗堆里的全部小刀（升级版按普通小刀算，可能偏低）",
+        "KnifeTrap" => "打出消耗堆里的全部小刀（伤害取消耗堆里真实小刀的卡面值）",
         "HandTrick" => "本回合给手牌里一张技能牌加奇巧（模型替你挑）",
         "Accelerant" => "能力牌（本回合中毒额外触发，影响中毒击杀判定）",
         "Burst" => "本回合打出的下 1 张技能牌额外打出一次",
@@ -204,6 +204,9 @@ internal static class SilentLogic
 
     /// <summary>爆发：本回合打出的下 N 张技能牌额外打出一次。</summary>
     public static bool DoublesNextSkills(string className) => className is "Burst";
+
+    /// <summary>逃脱计划：格挡是"抽到技能牌才给"，出牌时按实际抽到的牌判定。</summary>
+    public static bool BlockOnlyIfSkillDrawn(string className) => className is "EscapePlan";
 }
 
 
