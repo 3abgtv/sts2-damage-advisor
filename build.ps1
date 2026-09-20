@@ -35,8 +35,8 @@ $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
 $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
 $hasInject = $ascii.Contains("InjectNextTestCard") -or $ascii.Contains("TestCards")
 $hasDump = $ascii.Contains("DumpSilentPool")
-# 克隆探测（engine/rewrite 第一阶段）同理：只在开发版里，工坊版不许带
-$hasProbe = $ascii.Contains("CloneProbe")
+# 克隆探测与影子状态（engine/rewrite 阶段）同理：只在开发版里，工坊版不许带
+$hasProbe = $ascii.Contains("CloneProbe") -or $ascii.Contains("SimCommands") -or $ascii.Contains("SimState")
 $wsVersion = "$($manifest.version)-ws"
 $hasWsTag = $utf16.Contains($wsVersion)
 

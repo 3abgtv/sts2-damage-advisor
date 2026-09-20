@@ -77,6 +77,9 @@ internal static class CloneProbe
         Entry.Log($"[探测] ① 捕获零影响：{(captureClean ? "✓ 前后指纹一致" : "✗ 真机状态变了！")}");
         Entry.Log($"[探测] ③ RNG 不推进：{(rngClean ? "✓ 取快照前后序列化一致" : "✗ RNG 被推进了！")}");
         Entry.Log($"[探测] ② 克隆体隔离：{cloneReport}");
+
+        // ④ 第二阶段第一刀：影子状态 + 命令镜像，给一个"可在游戏里实际验证"的预测
+        Entry.Log($"[探测] ④ 模拟自检：{SimSelfCheck(me, state)}");
         if (!captureClean)
             Entry.Log($"[探测] 前：{before}");
         if (!captureClean)
@@ -143,29 +146,29 @@ internal static class CloneProbe
                 RelicModel? clone = DeepCloneModel(live);
                 if (clone is null)
                 {
-                    parts.Add($"遗物 {live.Title}：深克隆失败（找不到克隆钩子）");
+                    parts.Add($"遗物 {RelicName(live)}：深克隆失败（找不到克隆钩子）");
                 }
                 else
                 {
                     // 先把"克隆成功 + 是否共享引用"落下来 —— 万一后面的写入测试抛异常，这半句也不会丢
                     bool sharesVars = ReferenceEquals(clone.DynamicVars, live.DynamicVars);
-                    string mut;
-                    if (live.IsStackable)
+                    parts.Add($"遗物 {RelicName(live)}：深克隆成功，共享 DynamicVars={sharesVars}"
+                              + (sharesVars ? " ← 仍共享（需要更深的拷贝）" : " ← 不共享"));
+
+                    // 写入测试要挑一个**可叠加**的遗物（不可叠加的不能改计数）
+                    RelicModel? stackable = relics.FirstOrDefault(r => r.IsStackable);
+                    if (stackable is null)
                     {
-                        // 可叠加遗物才能改计数；克隆体是我们自己的实例，改它安全
-                        int before = live.DisplayAmount;
-                        clone.IncrementStackCount();
-                        mut = live.DisplayAmount != before
-                            ? "计数器写入：✗ 泄漏！真机被改了"
-                            : "计数器写入：✓ 隔离（真机未变）";
+                        parts.Add("写入测试：手上没有可叠加遗物，未覆盖（只看共享引用）");
                     }
                     else
                     {
-                        mut = "非可叠加遗物 → 跳过写入测试（只看是否共享引用）";
+                        RelicModel? stackClone = DeepCloneModel(stackable);
+                        int before = stackable.DisplayAmount;
+                        stackClone?.IncrementStackCount();
+                        parts.Add($"写入测试（{RelicName(stackable)}）："
+                                  + (stackable.DisplayAmount != before ? "✗ 泄漏！真机被改了" : "✓ 隔离（真机未变）"));
                     }
-                    parts.Add($"遗物 {live.Title}：深克隆成功，共享 DynamicVars={sharesVars}"
-                              + (sharesVars ? " ← 仍共享（需要更深的拷贝）" : " ← 不共享")
-                              + " | " + mut);
                 }
             }
             catch (Exception ex)
@@ -195,6 +198,20 @@ internal static class CloneProbe
         return clone as T;
     }
 
+    /// <summary>遗物的本地化名（RelicModel.Title 是 LocString，直接 ToString 会得到原始键）。</summary>
+    private static string RelicName(RelicModel relic)
+    {
+        try
+        {
+            string text = relic.Title.GetFormattedText();
+            return string.IsNullOrWhiteSpace(text) ? relic.Id.ToString() ?? "?" : text.Trim();
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
     /// <summary>调用非公开方法（沿继承链找），返回其返回值。</summary>
     private static object? InvokeNonPublic(object target, Type declaring, string name)
     {
@@ -207,6 +224,63 @@ internal static class CloneProbe
             method = t.GetMethod(name, flags);
 
         return method?.Invoke(target, null);
+    }
+
+    /// <summary>
+    /// 第二阶段第一刀：把 live 状态捕获成影子状态，在影子上打一张单体攻击牌，
+    /// 输出一条"**你可以在游戏里实际打一张来核对**"的预测。
+    ///
+    /// 这是差分验证链的第一环 —— 模拟结果 vs 实机结果，后面每接一张牌都走这个方式。
+    /// </summary>
+    private static string SimSelfCheck(Player me, CombatState state)
+    {
+        try
+        {
+            PlayerCombatState? pcs = me.PlayerCombatState;
+            if (pcs is null)
+                return "拿不到战斗状态";
+
+            // 复用求解器已经算好的手牌解析结果：同一套语义，不重复实现
+            TurnAdvice advice = DamageModel.Solve(
+                pcs.Hand.Cards,
+                pcs.DrawPile.Cards,
+                pcs.ExhaustPile.Cards,
+                pcs.Energy,
+                pcs.MaxEnergy,
+                pcs.DiscardPile.Cards.Count,
+                state.Enemies,
+                state.PlayerCreatures.ToList(),
+                me.Creature,
+                me.Creature.CurrentHp,
+                me.Creature.Block);
+
+            SimState sim = SimState.Capture(me, state, advice.HandEffects);
+            if (sim.Foes.Count == 0)
+                return "影子状态：没有存活敌人，跳过";
+
+            int idx = -1;
+            for (int i = 0; i < advice.HandEffects.Count; i++)
+            {
+                CardEffect c = advice.HandEffects[i];
+                if (c.Supported && c.IsAttack && c.Damage > 0 && !c.HitsAll)
+                {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0)
+                return $"影子状态已捕获（我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量，敌 {sim.Foes.Count} 只，手牌 {sim.Hand.Count} 张），但手里没有可测的单体攻击牌";
+
+            SimFoe foe = sim.Foes[0];
+            string before = $"我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量；敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡";
+            string result = SimCommands.PlayCard(sim, idx, foe.Index);
+            return $"影子状态已捕获（{before}）→ {result} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡，我 {sim.PlayerEnergy}能量"
+                 + " ← 你实际打这一张核对一下数字";
+        }
+        catch (Exception ex)
+        {
+            return "模拟自检异常：" + ex.GetType().Name + " " + ex.Message;
+        }
     }
 
     /// <summary>真机指纹：把会影响推算的 live 值拼成一个字符串，用于前后逐字比对。</summary>
