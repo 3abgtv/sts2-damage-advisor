@@ -58,6 +58,8 @@ internal sealed class SimState
     public bool HandFree { get; set; }
     /// <summary>子弹时间：本回合不能再抽牌。</summary>
     public bool NoDraw { get; set; }
+    /// <summary>爆发：接下来还有几张技能牌会被额外打出一次（载荷翻倍）。</summary>
+    public int DoubleSkillCount { get; set; }
     /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
     public int RoundNumber { get; init; }
 
@@ -286,10 +288,24 @@ internal static class SimCommands
             sim.NoDraw = true;
         }
 
+        // 爆发：这张牌如果是"会被额外打出一次"的技能牌，载荷整体翻倍
+        // （用打出前的计数判断；"每打出一张牌"类触发不翻倍 —— 与主模型同一约定）
+        bool doubled = card.IsSkill && sim.DoubleSkillCount > 0;
+        int times = doubled ? 2 : 1;
+        if (doubled)
+            parts.Add($"爆发：额外打出一次（载荷 ×2）");
+        if (card.IsSkill)
+            sim.DoubleSkillCount = Math.Max(0, sim.DoubleSkillCount - 1);
+        if (card.DoublesNextSkills > 0)
+        {
+            sim.DoubleSkillCount = card.DoublesNextSkills;
+            parts.Add($"本回合接下来 {card.DoublesNextSkills} 张技能牌额外打出一次");
+        }
+
         var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
 
-        // ① 小刀的精准加成 + X 费按投入能量放大
+        // ① 小刀的精准加成 + X 费按投入能量放大 + 爆发翻倍
         decimal baseDamage = card.IsXCost ? card.Damage * cost : card.Damage;
         if (baseDamage > 0 && SilentLogic.IsShivCard(card.ClassName) && sim.ShivBonus > 0)
         {
@@ -298,6 +314,7 @@ internal static class SimCommands
         }
         if (card.IsXCost)
             parts.Add($"X 费：投入 {cost} 点能量 → 伤害 {baseDamage:0.#}");
+        baseDamage *= times;
 
         // ② 伤害（先扣格挡再扣血；只对本回合新上的易伤 ×1.5）+ 涂毒
         if (baseDamage > 0)
@@ -311,18 +328,18 @@ internal static class SimCommands
             }
         }
 
-        // ③ 卡面格挡 / 能量 / 状态（抽牌与弃牌按主模型的顺序放到后面）
+        // ③ 卡面格挡 / 能量 / 状态（抽牌与弃牌按主模型的顺序放到后面）；爆发时载荷 ×2
         if (card.Block > 0)
-            parts.Add(GainBlock(sim, card.Block));
+            parts.Add(GainBlock(sim, card.Block * times));
         if (card.EnergyGain > 0)
-            parts.Add(GainEnergy(sim, card.EnergyGain));
+            parts.Add(GainEnergy(sim, card.EnergyGain * times));
         foreach (SimFoe foe in targets)
         {
-            if (card.Poison > 0) parts.Add(ApplyPoison(foe, card.Poison));
+            if (card.Poison > 0) parts.Add(ApplyPoison(foe, card.Poison * times));
             // X 费的状态（萎靡）：按投入能量给层数
-            int weak = card.IsXCost && card.WeakPerX > 0 ? card.WeakPerX * cost : card.Weak;
+            int weak = card.IsXCost && card.WeakPerX > 0 ? card.WeakPerX * cost : card.Weak * times;
             if (weak > 0) parts.Add(ApplyWeak(foe, weak));
-            if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable));
+            if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable * times));
         }
 
         // ④ 弃掉整手牌：钢铁风暴（每张换小刀）/ 计算下注（抽等量）/ 暗影步（弃整手不补充）
@@ -347,20 +364,20 @@ internal static class SimCommands
 
         // ⑤ 普通弃牌
         if (card.Discard > 0)
-            DiscardCards(sim, card.Discard, parts);
+            DiscardCards(sim, card.Discard * times, parts);
 
         // ⑥ 抽牌（子弹时间之后本回合不能再抽）
-        if (card.Draw > 0)
+        if (card.Draw * times > 0)
         {
             if (sim.NoDraw)
-                parts.Add($"牌面要求抽 {card.Draw} 张，但本回合已不能再抽（子弹时间）");
+                parts.Add($"牌面要求抽 {card.Draw * times} 张，但本回合已不能再抽（子弹时间）");
             else
-                parts.Add(Draw(sim, card.Draw));
+                parts.Add(Draw(sim, card.Draw * times));
         }
 
         // ⑦ 生成小刀
         if (card.Shivs > 0)
-            AddShivs(sim, card.Shivs, parts);
+            AddShivs(sim, card.Shivs * times, parts);
 
         // ⑧ "每打出一张牌"类触发（**用打这张牌之前的层数** —— 实测：打出余像自己
         //    不触发余像，所以必须先触发再累加。见差分对照：预测 8 格挡 / 实机 7）
@@ -373,14 +390,14 @@ internal static class SimCommands
                 parts.Add($"群蛇形态 → {victim.Index}号 {DealDamage(victim, sim.DamagePerCardPlayed)}");
         }
 
-        // ⑨ 能力牌自身的持续效果（放在触发之后：这张牌自己不吃自己的加成）
+        // ⑨ 能力牌自身的持续效果（放在触发之后：这张牌自己不吃自己的加成）；爆发时 ×2
         var gained = new List<string>();
-        if (card.BlockPerCard > 0) { sim.BlockPerCard += card.BlockPerCard; gained.Add($"余像 {card.BlockPerCard}"); }
-        if (card.ShivBonus > 0) { sim.ShivBonus += card.ShivBonus; gained.Add($"精准 {card.ShivBonus}"); }
-        if (card.Envenom > 0) { sim.Envenom += card.Envenom; gained.Add($"涂毒 {card.Envenom}"); }
-        if (card.PoisonPerDraw > 0) { sim.PoisonPerDraw += card.PoisonPerDraw; gained.Add($"腐蚀波 {card.PoisonPerDraw}"); }
-        if (card.DamagePerCardPlayed > 0) { sim.DamagePerCardPlayed += card.DamagePerCardPlayed; gained.Add($"群蛇形态 {card.DamagePerCardPlayed}"); }
-        if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw; gained.Add($"速行者 {card.DamagePerDraw}"); }
+        if (card.BlockPerCard > 0) { sim.BlockPerCard += card.BlockPerCard * times; gained.Add($"余像 {card.BlockPerCard * times}"); }
+        if (card.ShivBonus > 0) { sim.ShivBonus += card.ShivBonus * times; gained.Add($"精准 {card.ShivBonus * times}"); }
+        if (card.Envenom > 0) { sim.Envenom += card.Envenom * times; gained.Add($"涂毒 {card.Envenom * times}"); }
+        if (card.PoisonPerDraw > 0) { sim.PoisonPerDraw += card.PoisonPerDraw * times; gained.Add($"腐蚀波 {card.PoisonPerDraw * times}"); }
+        if (card.DamagePerCardPlayed > 0) { sim.DamagePerCardPlayed += card.DamagePerCardPlayed * times; gained.Add($"群蛇形态 {card.DamagePerCardPlayed * times}"); }
+        if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw * times; gained.Add($"速行者 {card.DamagePerDraw * times}"); }
         if (gained.Count > 0)
             parts.Add("获得能力：" + string.Join("、", gained));
 
