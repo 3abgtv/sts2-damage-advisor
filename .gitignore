@@ -14,3 +14,7 @@ docs/silent-pool.txt
 workshop/content/
 # 日志验证报告（tools/verify-log.py 输出，含游戏内文本）
 docs/verify-report.txt
+# 扫描输出（含游戏内文本，与 silent-pool.txt 同理，不随仓库分发）
+docs/scan-hits.txt
+# Python 缓存
+tools/__pycache__/
