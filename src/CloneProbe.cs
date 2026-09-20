@@ -226,11 +226,53 @@ internal static class CloneProbe
         return method?.Invoke(target, null);
     }
 
+    // ---- 差分验证闭环：上次预测 → 下次按 F5 时用实机状态核对 ----
+    private static string _pendingCard = "";
+    private static int _pendingFoeIndex;
+    private static int _pendingFoeHp;
+    private static int _pendingEnergy;
+    private static bool _hasPending;
+
+    /// <summary>
+    /// 用**当前实机状态**核对上一次预测：
+    ///   敌人血量与能量都恰好等于预测值 → 差分通过（实机转移 == 模拟预测）
+    ///   否则 → 无法验证（可能没打那张牌，或被别的东西影响了），如实说明，不硬判对错
+    /// </summary>
+    private static void CheckPending(SimState sim)
+    {
+        if (!_hasPending)
+            return;
+        if (sim.Foes.FirstOrDefault(f => f.Index == _pendingFoeIndex) is not { } foe)
+        {
+            Entry.Log($"[差分] 上一次预测（打「{_pendingCard}」→ {_pendingFoeIndex}号 {_pendingFoeHp}血、我 {_pendingEnergy}能量）无法验证：目标已不在场");
+        }
+        else if (foe.Hp == _pendingFoeHp && sim.PlayerEnergy == _pendingEnergy)
+        {
+            Entry.Log($"[差分] ✓ 通过：实机与预测一致（打「{_pendingCard}」→ {_pendingFoeIndex}号 {foe.Hp}血、我 {sim.PlayerEnergy}能量）"
+                      + " —— 差分验证链闭环");
+        }
+        else
+        {
+            Entry.Log($"[差分] 无法验证：预测 {_pendingFoeIndex}号 {_pendingFoeHp}血/我 {_pendingEnergy}能量，"
+                      + $"实机 {foe.Hp}血/我 {sim.PlayerEnergy}能量（可能没打那张牌，或被其它效果影响）");
+        }
+        _hasPending = false;
+    }
+
+    private static void SavePending(CardEffect card, SimFoe foe, SimState sim)
+    {
+        _pendingCard = card.Name;
+        _pendingFoeIndex = foe.Index;
+        _pendingFoeHp = foe.Hp;
+        _pendingEnergy = sim.PlayerEnergy;
+        _hasPending = true;
+    }
+
     /// <summary>
     /// 第二阶段第一刀：把 live 状态捕获成影子状态，在影子上打一张单体攻击牌，
-    /// 输出一条"**你可以在游戏里实际打一张来核对**"的预测。
+    /// 输出一条"**你可以在游戏里实际打一张来核对**"的预测，并在下次按 F5 时自动核对。
     ///
-    /// 这是差分验证链的第一环 —— 模拟结果 vs 实机结果，后面每接一张牌都走这个方式。
+    /// 这是差分验证链 —— 模拟结果 vs 实机结果，后面每接一张牌都走这个方式。
     /// </summary>
     private static string SimSelfCheck(Player me, CombatState state)
     {
@@ -258,6 +300,9 @@ internal static class CloneProbe
             if (sim.Foes.Count == 0)
                 return "影子状态：没有存活敌人，跳过";
 
+            // 先用当前实机状态核对上一次的预测（差分验证闭环）
+            CheckPending(sim);
+
             int idx = -1;
             for (int i = 0; i < advice.HandEffects.Count; i++)
             {
@@ -272,10 +317,12 @@ internal static class CloneProbe
                 return $"影子状态已捕获（我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量，敌 {sim.Foes.Count} 只，手牌 {sim.Hand.Count} 张），但手里没有可测的单体攻击牌";
 
             SimFoe foe = sim.Foes[0];
+            CardEffect predicted = sim.Hand[idx];   // 记下要预测的这张牌（PlayCard 会把它移出手牌）
             string before = $"我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量；敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡";
             string result = SimCommands.PlayCard(sim, idx, foe.Index);
+            SavePending(predicted, foe, sim);
             return $"影子状态已捕获（{before}）→ {result} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡，我 {sim.PlayerEnergy}能量"
-                 + " ← 你实际打这一张核对一下数字";
+                 + " ← 实际打这一张，再按一次 F5 就会自动核对";
         }
         catch (Exception ex)
         {
