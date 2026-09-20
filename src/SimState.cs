@@ -292,13 +292,11 @@ internal static class SimCommands
             }
         }
 
-        // ③ 卡面格挡 / 能量 / 抽牌 / 状态
+        // ③ 卡面格挡 / 能量 / 状态（抽牌与弃牌按主模型的顺序放到后面）
         if (card.Block > 0)
             parts.Add(GainBlock(sim, card.Block));
         if (card.EnergyGain > 0)
             parts.Add(GainEnergy(sim, card.EnergyGain));
-        if (card.Draw > 0)
-            parts.Add(Draw(sim, card.Draw));
         foreach (SimFoe foe in targets)
         {
             if (card.Poison > 0) parts.Add(ApplyPoison(foe, card.Poison));
@@ -306,7 +304,39 @@ internal static class SimCommands
             if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable));
         }
 
-        // ⑤ "每打出一张牌"类触发（**用打这张牌之前的层数** —— 实测：打出余像自己
+        // ④ 弃掉整手牌：钢铁风暴（每张换小刀）/ 计算下注（抽等量）/ 暗影步（弃整手不补充）
+        if (card.DiscardHandForShivs || card.DiscardHandForDraw || card.DiscardsEntireHand)
+        {
+            var discardedAll = new List<CardEffect>(sim.Hand);
+            sim.Hand.Clear();
+            foreach (CardEffect dc in discardedAll)
+                AutoPlayIfSly(sim, dc, parts);
+            if (card.DiscardHandForShivs)
+            {
+                int made = AddShivs(sim, discardedAll.Count, parts);
+                if (made == 0 && discardedAll.Count > 0)
+                    parts.Add($"应换 {discardedAll.Count} 把小刀但无模板（未生成）");
+            }
+            else if (card.DiscardHandForDraw)
+            {
+                parts.Add(Draw(sim, discardedAll.Count));
+            }
+            parts.Add($"弃整手 {discardedAll.Count} 张");
+        }
+
+        // ⑤ 普通弃牌
+        if (card.Discard > 0)
+            DiscardCards(sim, card.Discard, parts);
+
+        // ⑥ 抽牌
+        if (card.Draw > 0)
+            parts.Add(Draw(sim, card.Draw));
+
+        // ⑦ 生成小刀
+        if (card.Shivs > 0)
+            AddShivs(sim, card.Shivs, parts);
+
+        // ⑧ "每打出一张牌"类触发（**用打这张牌之前的层数** —— 实测：打出余像自己
         //    不触发余像，所以必须先触发再累加。见差分对照：预测 8 格挡 / 实机 7）
         if (sim.BlockPerCard > 0)
             parts.Add($"余像 → {GainBlock(sim, sim.BlockPerCard)}");
@@ -317,7 +347,7 @@ internal static class SimCommands
                 parts.Add($"群蛇形态 → {victim.Index}号 {DealDamage(victim, sim.DamagePerCardPlayed)}");
         }
 
-        // ④ 能力牌自身的持续效果（放在触发之后：这张牌自己不吃自己的加成）
+        // ⑨ 能力牌自身的持续效果（放在触发之后：这张牌自己不吃自己的加成）
         var gained = new List<string>();
         if (card.BlockPerCard > 0) { sim.BlockPerCard += card.BlockPerCard; gained.Add($"余像 {card.BlockPerCard}"); }
         if (card.ShivBonus > 0) { sim.ShivBonus += card.ShivBonus; gained.Add($"精准 {card.ShivBonus}"); }
@@ -328,22 +358,108 @@ internal static class SimCommands
         if (gained.Count > 0)
             parts.Add("获得能力：" + string.Join("、", gained));
 
-        // ⑥ 生成小刀（刀刃之舞/斗篷与匕首/袖里乾坤/刀扇…）
-        if (card.Shivs > 0)
+        return string.Join("；", parts);
+    }
+
+    /// <summary>生成 N 张小刀（按模板），返回实际生成数。没有模板时返回 0（调用方负责说明）。</summary>
+    private static int AddShivs(SimState sim, int count, List<string> parts)
+    {
+        if (sim.ShivTemplate is null || count <= 0)
+            return 0;
+        for (int s = 0; s < count; s++)
+            sim.Hand.Add(sim.ShivTemplate with { Source = null });
+        parts.Add($"生成 {count} 张小刀（手牌 {sim.Hand.Count}）");
+        return count;
+    }
+
+    /// <summary>普通弃牌：挑 N 张弃掉（被弃的奇巧牌会自动打出）。</summary>
+    private static void DiscardCards(SimState sim, int count, List<string> parts)
+    {
+        for (int d = 0; d < count && sim.Hand.Count > 0; d++)
         {
-            if (sim.ShivTemplate is null)
+            int pick = ChooseDiscardIndex(sim.Hand);
+            CardEffect discarded = sim.Hand[pick];
+            sim.Hand.RemoveAt(pick);
+            parts.Add($"弃「{discarded.Name}」");
+            AutoPlayIfSly(sim, discarded, parts);
+        }
+    }
+
+    /// <summary>
+    /// 被弃触发的奇巧（Sly）牌会**自动打出**（不花能量）—— 与主模型的 ApplyDiscardTrigger 对齐：
+    /// 目标取残血最少的敌人；只结算这张牌自己的效果，不触发"每打出一张牌"类能力。
+    /// </summary>
+    private static void AutoPlayIfSly(SimState sim, CardEffect discarded, List<string> parts)
+    {
+        if (!discarded.IsSly)
+            return;
+        SimFoe? target = sim.Foes.Where(f => f.Alive).OrderBy(f => f.Hp).FirstOrDefault();
+        var sub = new List<string> { $"奇巧自动打出「{discarded.Name}」" };
+
+        if (discarded.Damage > 0)
+        {
+            foreach (SimFoe foe in discarded.HitsAll ? AliveFoes(sim) : (target is null ? new List<SimFoe>() : new List<SimFoe> { target }))
             {
-                parts.Add($"应生成 {card.Shivs} 张小刀，但场上没有小刀可作模板（未生成）");
-            }
-            else
-            {
-                for (int s = 0; s < card.Shivs; s++)
-                    sim.Hand.Add(sim.ShivTemplate with { Source = null });
-                parts.Add($"生成 {card.Shivs} 张小刀（手牌 {sim.Hand.Count}）");
+                int hpBefore = foe.Hp;
+                sub.Add(DealDamage(foe, discarded.Damage * (foe.VulnerableNew ? 1.5m : 1m)));
+                if (sim.Envenom > 0 && foe.Hp < hpBefore)
+                    sub.Add(ApplyPoison(foe, sim.Envenom));
             }
         }
+        if (discarded.Block > 0)
+            sub.Add(GainBlock(sim, discarded.Block));
+        if (discarded.EnergyGain > 0)
+            sub.Add(GainEnergy(sim, discarded.EnergyGain));
+        if (discarded.Draw > 0)
+            sub.Add(Draw(sim, discarded.Draw));
+        if (discarded.Shivs > 0)
+            AddShivs(sim, discarded.Shivs, sub);
+        if (target is not null)
+        {
+            if (discarded.Poison > 0) sub.Add(ApplyPoison(target, discarded.Poison));
+            if (discarded.Weak > 0) sub.Add(ApplyWeak(target, discarded.Weak));
+            if (discarded.Vulnerable > 0) sub.Add(ApplyVulnerable(target, discarded.Vulnerable));
+        }
+        parts.Add(string.Join("、", sub));
+    }
 
-        return string.Join("；", parts);
+    /// <summary>
+    /// 弃牌优先级 —— **与主模型 DamageModel 的 ChooseDiscard 保持同一策略**（两处公式需同步）：
+    /// 先弃奇巧牌（挑自动打出价值最高的），否则弃价值最低的那张。
+    /// </summary>
+    private static int ChooseDiscardIndex(List<CardEffect> hand)
+    {
+        int bestSly = -1;
+        decimal bestSlyScore = -1m;
+        for (int i = 0; i < hand.Count; i++)
+        {
+            CardEffect c = hand[i];
+            if (!c.IsSly)
+                continue;
+            decimal score = c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
+                            + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
+            if (score > bestSlyScore)
+            {
+                bestSlyScore = score;
+                bestSly = i;
+            }
+        }
+        if (bestSly >= 0)
+            return bestSly;
+
+        int worst = 0;
+        decimal worstScore = decimal.MaxValue;
+        for (int i = 0; i < hand.Count; i++)
+        {
+            CardEffect c = hand[i];
+            decimal score = c.Damage + c.Block + c.Poison * 2m + c.Shivs * 4m;
+            if (score < worstScore)
+            {
+                worstScore = score;
+                worst = i;
+            }
+        }
+        return worst;
     }
 
     private static List<SimFoe> AliveFoes(SimState sim) => sim.Foes.Where(f => f.Alive).ToList();
