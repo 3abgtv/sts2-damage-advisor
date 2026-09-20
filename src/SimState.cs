@@ -26,6 +26,8 @@ internal sealed class SimState
     public int PlayerBlock { get; set; }
     public int PlayerEnergy { get; set; }
     public int PlayerMaxEnergy { get; init; }
+    /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
+    public int RoundNumber { get; init; }
     public List<SimFoe> Foes { get; init; } = new();
     /// <summary>手牌：捕获期用同一套语义（SilentLogic/Analyze）解析出来的纯值，Source 已置空。</summary>
     public List<CardEffect> Hand { get; init; } = new();
@@ -45,6 +47,7 @@ internal sealed class SimState
             PlayerBlock = me.Creature.Block,
             PlayerEnergy = pcs?.Energy ?? 0,
             PlayerMaxEnergy = pcs?.MaxEnergy ?? 0,
+            RoundNumber = state.RoundNumber,
             DrawCount = pcs?.DrawPile.Cards.Count ?? 0,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,

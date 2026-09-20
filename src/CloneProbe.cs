@@ -231,6 +231,8 @@ internal static class CloneProbe
     private static int _pendingFoeIndex;
     private static int _pendingFoeHp;
     private static int _pendingEnergy;
+    private static string _pendingFoeName = "";
+    private static int _pendingRound;
     private static bool _hasPending;
 
     /// <summary>
@@ -246,9 +248,15 @@ internal static class CloneProbe
         {
             Entry.Log($"[差分] 上一次预测（打「{_pendingCard}」→ {_pendingFoeIndex}号 {_pendingFoeHp}血、我 {_pendingEnergy}能量）无法验证：目标已不在场");
         }
+        else if (sim.RoundNumber != _pendingRound || foe.Name != _pendingFoeName)
+        {
+            // 身份校验：回合或敌人名不一致 → 这是另一场战斗/另一只怪，不能拿数字凑巧来判通过
+            Entry.Log($"[差分] 上一次预测无法验证：状态已推进（预测时第 {_pendingRound} 回合的 {_pendingFoeName}，"
+                      + $"现在是第 {sim.RoundNumber} 回合的 {foe.Name}）");
+        }
         else if (foe.Hp == _pendingFoeHp && sim.PlayerEnergy == _pendingEnergy)
         {
-            Entry.Log($"[差分] ✓ 通过：实机与预测一致（打「{_pendingCard}」→ {_pendingFoeIndex}号 {foe.Hp}血、我 {sim.PlayerEnergy}能量）"
+            Entry.Log($"[差分] ✓ 通过：实机与预测一致（第 {sim.RoundNumber} 回合打「{_pendingCard}」→ {_pendingFoeIndex}号 {foe.Hp}血、我 {sim.PlayerEnergy}能量）"
                       + " —— 差分验证链闭环");
         }
         else
@@ -265,6 +273,8 @@ internal static class CloneProbe
         _pendingFoeIndex = foe.Index;
         _pendingFoeHp = foe.Hp;
         _pendingEnergy = sim.PlayerEnergy;
+        _pendingFoeName = foe.Name;
+        _pendingRound = sim.RoundNumber;
         _hasPending = true;
     }
 
