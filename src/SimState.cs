@@ -503,11 +503,7 @@ internal static class SimCommands
             parts.Add($"弃整手 {discardedAll.Count} 张");
         }
 
-        // ⑤ 普通弃牌
-        if (card.Discard > 0)
-            DiscardCards(sim, card.Discard * times, parts, discards);
-
-        // ⑥ 抽牌（子弹时间之后本回合不能再抽）
+        // ⑤ 抽牌（子弹时间之后本回合不能再抽）
         if (card.Draw * times > 0)
         {
             if (sim.NoDraw)
@@ -515,6 +511,13 @@ internal static class SimCommands
             else
                 parts.Add(Draw(sim, card.Draw * times));
         }
+
+        // ⑥ 普通弃牌
+        // 位置在**抽牌之后**，与游戏文本一致（杂技/投掷匕首＝"抽 N 张，然后弃 1 张"），
+        // 弃的可以是刚抽上来那张。**必须与主模型 DamageModel.ApplyCard 里的顺序一起改**——
+        // 两边同错时差分完全看不出来（2026-09-20 才发现）。
+        if (card.Discard > 0)
+            DiscardCards(sim, card.Discard * times, parts, discards);
 
         // ⑦ 刀扇（本回合小刀改打全体）与生成小刀
         if (card.MakesShivsHitAll && !sim.ShivsHitAll)

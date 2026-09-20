@@ -959,7 +959,21 @@ internal static class DamageModel
                 // 暗影步：弃整手且不补充
             }
 
+            // 抽牌（子弹时间后本回合不能再抽）；爆发翻倍时抽两次
+            // ⚠️ 必须在普通弃牌之前，理由见下面那段
+            List<CardEffect> drawn = (!next.NoDraw && played.Draw > 0)
+                ? HandleDraws(next, played.Draw * times)
+                : new List<CardEffect>();
+
+            // 逃脱计划：只有抽到技能牌才给那 3 点格挡（抽牌堆顺序在搜索里已知，能算准）
+            if (played.BlockIfSkillDrawn > 0 && drawn.Any(c => c.IsSkill))
+                next.Block += (played.BlockIfSkillDrawn + state.Dex)
+                              * (state.DoubleBlock || played.DoubleBlock ? 2 : 1);
+
             // 普通弃牌（含被弃触发）；爆发翻倍时弃两次
+            // 位置在**抽牌之后**：杂技/投掷匕首 的文本是"抽 N 张，然后弃 1 张"，弃的可以是刚抽上来
+            // 那张。以前两个引擎都写成"先弃后抽"——而且错得一模一样，所以差分对这件事完全没有
+            // 分辨力（2026-09-20 才发现）。改这里时两个引擎必须一起改，否则会凭空多出一类差异。
             for (int d = 0; d < played.Discard * times && next.Hand.Count > 0; d++)
             {
                 int pick = ChooseDiscard(next.Hand);
@@ -972,16 +986,6 @@ internal static class DamageModel
                     next.Actions[^1].Discards.Add(discarded);
                 ApplyDiscardTrigger(next, discarded);
             }
-
-            // 抽牌（子弹时间后本回合不能再抽）；爆发翻倍时抽两次
-            List<CardEffect> drawn = (!next.NoDraw && played.Draw > 0)
-                ? HandleDraws(next, played.Draw * times)
-                : new List<CardEffect>();
-
-            // 逃脱计划：只有抽到技能牌才给那 3 点格挡（抽牌堆顺序在搜索里已知，能算准）
-            if (played.BlockIfSkillDrawn > 0 && drawn.Any(c => c.IsSkill))
-                next.Block += (played.BlockIfSkillDrawn + state.Dex)
-                              * (state.DoubleBlock || played.DoubleBlock ? 2 : 1);
 
             // 生成小刀
             for (int s = 0; s < played.Shivs * times; s++)
