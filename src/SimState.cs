@@ -52,6 +52,8 @@ internal sealed class SimState
     public int DamagePerCardPlayed { get; set; }
     /// <summary>速行者：每抽一张牌 → 全体敌人 N 伤害。</summary>
     public int DamagePerDraw { get; set; }
+    /// <summary>融入暗影：本回合获得的格挡翻倍（含余像给的格挡）。</summary>
+    public bool DoubleBlock { get; set; }
     /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
     public int RoundNumber { get; init; }
 
@@ -86,6 +88,8 @@ internal sealed class SimState
             PoisonPerDraw = DamageModel.ReadPowerAmount<CorrosiveWavePower>(self),
             DamagePerCardPlayed = DamageModel.ReadPowerAmount<SerpentFormPower>(self),
             DamagePerDraw = DamageModel.ReadPowerAmount<SpeedsterPower>(self),
+            // 融入暗影若已被打出（本回合内），捕获时也要带上它的翻倍标记
+            DoubleBlock = DamageModel.ReadPowerAmount<ShadowmeldPower>(self) > 0,
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,
@@ -158,10 +162,12 @@ internal static class SimCommands
         return $"伤害 {amount:0.#}：格挡吸收 {absorbed}、掉血 {dealt}" + (foe.Hp <= 0 ? "（击杀）" : "");
     }
 
+    /// <summary>获得格挡（融入暗影生效时翻倍 —— 连余像给的格挡也翻，与主模型同一约定）。</summary>
     public static string GainBlock(SimState sim, int amount)
     {
-        sim.PlayerBlock += amount;
-        return $"格挡 +{amount}（现在 {sim.PlayerBlock}）";
+        int applied = sim.DoubleBlock ? amount * 2 : amount;
+        sim.PlayerBlock += applied;
+        return $"格挡 +{applied}" + (sim.DoubleBlock ? "（融入暗影×2）" : "") + $"（现在 {sim.PlayerBlock}）";
     }
 
     public static string GainEnergy(SimState sim, int amount)
@@ -243,6 +249,10 @@ internal static class SimCommands
 
         sim.PlayerEnergy -= cost;
         sim.Hand.RemoveAt(handIndex);
+
+        // 融入暗影：先置位再结算，这样"打出它自己"也翻倍（与主模型一致）
+        if (card.DoubleBlock)
+            sim.DoubleBlock = true;
 
         var parts = new List<string> { $"打出「{card.Name}」花 {cost} 能量" };
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
