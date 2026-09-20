@@ -264,6 +264,7 @@ internal static class CloneProbe
     private static int _pendingPlayerBlock;
     private static string _pendingFoeName = "";
     private static int _pendingRound;
+    private static int _pendingMismatchLogs;
     private static bool _hasPending;
 
     /// <summary>
@@ -310,6 +311,14 @@ internal static class CloneProbe
                           + " —— 差分验证链闭环");
                 _hasPending = false;
             }
+            else if (_pendingMismatchLogs < 3)
+            {
+                // 还没全等：把两边都打出来（限流 3 条），否则永远看不出差在哪
+                _pendingMismatchLogs++;
+                Entry.Log($"[差分] 对照中（第 {_pendingMismatchLogs} 次）：预测「{_pendingCard}」→ {_pendingFoeHp}血/中毒{_pendingFoePoison}"
+                          + $"/易伤{_pendingFoeVulnerable}/虚弱{_pendingFoeWeak}/我 {_pendingEnergy}能量/{_pendingPlayerBlock}格挡；"
+                          + $"实机 → {foe.CurrentHp}血/中毒{poison}/易伤{vulnerable}/虚弱{weak}/我 {pcs.Energy}能量/{me.Creature.Block}格挡");
+            }
             // 其余情况保留待核对：打完牌后的下一次刷新就会命中
         }
         catch (Exception ex)
@@ -331,6 +340,7 @@ internal static class CloneProbe
         _pendingPlayerBlock = sim.PlayerBlock;
         _pendingFoeName = foe.Name;
         _pendingRound = sim.RoundNumber;
+        _pendingMismatchLogs = 0;
         _hasPending = true;
     }
 
