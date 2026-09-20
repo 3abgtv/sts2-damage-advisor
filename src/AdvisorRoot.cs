@@ -70,6 +70,8 @@ public partial class AdvisorRoot : CanvasLayer
         "Sidestep", "DaggerSpray", "Expose", "FanOfKnives", "EscapePlan", "Afterimage",
         // v0.9.9 新建模、待实机验证的牌
         "Tracking", "WraithForm", "Strangle", "Pounce", "BubbleBubble", "EchoingSlash",
+        // 覆盖率补齐（刀刃陷阱/爆发/手上技法/触媒）与费用修正（精密瞄准）
+        "KnifeTrap", "Burst", "HandTrick", "Accelerant", "Pinpoint",
     };
 #endif
     private string _signature = "";
@@ -592,7 +594,7 @@ public partial class AdvisorRoot : CanvasLayer
                     continue;
                 if (!after.Alive)
                     kill.Add($"✅ 击杀 {before.Index}号 {before.Name}");
-                else if (after.Poison >= after.Hp)
+                else if (after.DiesToPoisonWith(advice.PlayerAccelerant))
                     kill.Add($"☠ 中毒先手击杀 {before.Index}号 {before.Name}（中毒{after.Poison}，它本回合不会出手）");
                 else if (after.Hp < before.Hp)
                     kill.Add($"{before.Index}号 {before.Name} {before.Hp}→{after.Hp}");
@@ -619,8 +621,9 @@ public partial class AdvisorRoot : CanvasLayer
     private static string BuildSignature(CombatState state, PlayerCombatState pcs, Creature me, IReadOnlyList<CardModel> hand)
     {
         string cards = string.Join(",", hand.Select(SafeId));
-        // 敌人格挡也要进指纹：它会让整轮输出被吃光，只比血量会漏掉"格挡变了但血没变"的情况
-        string foes = string.Join(",", state.Enemies.Select(e => $"{e.CurrentHp}/{e.Block}"));
+        // 敌人格挡与 debuff 都要进指纹：格挡会让整轮输出被吃光；中毒这类只变 debuff 的情况
+        // （比如打完一张上毒牌之后）如果不在指纹里，面板会停在过期的建议上
+        string foes = string.Join(",", state.Enemies.Select(e => $"{e.CurrentHp}/{e.Block}/{DamageModel.DebuffKey(e)}"));
         return $"{state.RoundNumber}|{pcs.TurnNumber}|{pcs.Energy}|{pcs.DrawPile.Cards.Count}"
              + $"|{me.CurrentHp}|{me.Block}|{cards}|{foes}";
     }

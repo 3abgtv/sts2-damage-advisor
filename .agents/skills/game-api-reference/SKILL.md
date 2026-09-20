@@ -39,11 +39,21 @@ card.GetType().Name    // 类名（语义分发用：BladeDance / Acrobatics …
 card.Id                // ModelId，ToString() 形如 CARD.BLADE_DANCE
 card.Type              // CardType.Attack / Skill / Power / Status / Curse
 card.TargetType        // TargetType.AnyEnemy / AllEnemies / Self / RandomEnemy …
-card.EnergyCost?.Canonical   // 基础费用；CostsX 表示 X 费
 foreach (KeyValuePair<string, DynamicVar> kv in card.DynamicVars) { kv.Key; kv.Value.BaseValue; kv.Value.PreviewValue; }
 card.DynamicVars.TryGetValue("Damage", out DynamicVar v)
 ```
 
+### 费用（CardEnergyCost）
+
+```csharp
+card.EnergyCost?.Canonical        // 基础费用——**不含任何修正**
+card.EnergyCost?.CostsX           // 是否 X 费
+card.EnergyCost?.GetResolved()    // ✅ 当前费用：含全部修正（精密瞄准每张技能 -1、遗物、其它牌的效果）
+card.EnergyCost?.HasLocalModifiers// 这张牌的费用是否被本地修正过
+```
+
+- **要"这张牌现在花多少能量"就用 `GetResolved()`**，用 `Canonical` 会漏掉所有费用修正（X 费仍走 `Canonical` + `CostsX` 单独处理）。
+  `GetWithModifiers(CostModifiers)` 需要自己传修正集合，一般用不上。
 - **伤害取 `PreviewValue`**（游戏自己维护的卡面数字，含力量/虚弱/易伤）。`UpdateCardPreview(...)` 会覆盖它，别调。
 - 变量类型匹配优先：`BlockVar` / `PowerVar<PoisonPower>` / `PowerVar<WeakPower>` / `CardsVar` / `RepeatVar` / `EnergyVar`。
 - 卡名：`card.Description.LocTable` + `LocEntryKey`（形如 `X.description`）→ 用 `LocString.Exists/GetIfExists(table, "X.title")` 取本地化名。

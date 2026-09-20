@@ -34,6 +34,7 @@ FIXED_DRAW = {"投掷匕首": 1, "逃脱计划": 1}          # 描述里写死"�
 HARDCODED_HITS = {"匕首雨": 2}                      # 描述里写死"造成 N 点伤害两次"，没有 Repeat 变量
 CARDS_MEANS_SHIVS = {"刀刃之舞", "斗篷与匕首", "袖里乾坤", "墨之刃"}   # Cards= 是"生成小刀数"而不是抽牌数
 CARDS_MEANS_DISCARD = {"隐秘匕首"}                  # Cards= 是弃牌数（日志不记弃牌，该字段跳过校验）
+SKIP_DAMAGE_CHECK = {"刀刃陷阱"}                    # 伤害 = CalculatedShivs × 小刀伤害，卡面没有 Damage 变量可推
 
 SNAPSHOT_RE = re.compile(
     r"手牌快照#(?P<n>\d+)\s+turn=(?P<turn>\d+)\s+energy=(?P<energy>-?\d+)\s+hand=(?P<hand>\d+)\s+"
@@ -189,6 +190,8 @@ def check_card(lineno: int, time_str: str, snapshot: int, m: re.Match, stats: St
     out: list[Mismatch] = []
     stats.compared += 1
     for fld, exp in expected.items():
+        if fld == "dmg" and name in SKIP_DAMAGE_CHECK:
+            continue
         if abs(got[fld] - exp) > 1e-6:
             out.append(Mismatch(lineno, time_str, snapshot, name, fld, got[fld], exp, m.group("vars")))
     return out

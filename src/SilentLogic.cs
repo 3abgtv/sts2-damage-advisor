@@ -152,19 +152,25 @@ internal static class SilentLogic
         "Pounce" => "下一张技能牌耗能变 0",
         "BladeOfInk" => "生成墨影小刀（按普通小刀算，可能偏低）",
         "TheHunt" => "斩杀的额外卡牌奖励在战斗结算时，不影响本回合",
+        "KnifeTrap" => "打出消耗堆里的全部小刀（升级版按普通小刀算，可能偏低）",
+        "HandTrick" => "本回合给手牌里一张技能牌加奇巧（模型替你挑）",
+        "Accelerant" => "能力牌（本回合中毒额外触发，影响中毒击杀判定）",
+        "Burst" => "本回合打出的下 1 张技能牌额外打出一次",
+        "BouncingFlask" => "随机目标：模型按全部次数落在同一目标上算",
+        "Ricochet" => "随机目标：模型按全部次数落在同一目标上算",
         _ => "",
     };
 
     /// <summary>本回合完全没有建模的牌（会在面板里标出来，不参与推荐）。</summary>
     public static string UnsupportedReason(string className) => className switch
     {
-        "KnifeTrap" => "刀刃陷阱：需要消耗堆里的小刀，未建模",
-        "Burst" => "爆发：技能双触发，未建模",
-        "Nightmare" => "夜魇：复制手牌，未建模",
-        "Concoct" => "调制：给队友加毒，未建模",
-        "Flanking" => "夹击：多人向效果，未建模",
-        "Fade" => "消影：给队友加敏捷，未建模",
-        "Sneaky" => "鬼祟：只有队友攻击时才有收益，单人局无收益",
+        // 多人向：单人局本来就没有效果，不建模是**正确**的，备注说明原因即可
+        "Concoct" => "调制：多人向（给队友加毒），单人局无效果",
+        "Flanking" => "夹击：多人向（只加其他玩家的伤害），单人局无效果",
+        "Fade" => "消影：多人向（给队友加敏捷），单人局无效果",
+        "Sneaky" => "鬼祟：多人向（队友攻击时才有收益），单人局无效果",
+        // 本回合确实没有收益（跨回合生效）
+        "Nightmare" => "夜魇：下个回合才加入复制的牌，本回合无收益",
         "MasterPlanner" => "谋划专家：技能获得奇巧，触发方式未确认，未建模",
         _ => "",
     };
@@ -186,6 +192,18 @@ internal static class SilentLogic
 
     /// <summary>回响斩击：每有一名敌人被击杀，就重复一次全体伤害。</summary>
     public static bool RepeatsOnKill(string className) => className is "EchoingSlash";
+
+    /// <summary>刀刃陷阱：把消耗牌堆里的小刀全部对一名敌人打出（张数由卡面 CalculatedShivs 给出）。</summary>
+    public static bool PlaysExhaustShivs(string className) => className is "KnifeTrap";
+
+    /// <summary>手上技法：给手牌中的一张技能牌添加奇巧（由模型挑"弃掉最划算"的那张）。</summary>
+    public static bool GrantsSlyToSkill(string className) => className is "HandTrick";
+
+    /// <summary>触媒：中毒额外触发 N 次（影响"中毒先手击杀"的判定）。</summary>
+    public static bool GrantsAccelerant(string className) => className is "Accelerant";
+
+    /// <summary>爆发：本回合打出的下 N 张技能牌额外打出一次。</summary>
+    public static bool DoublesNextSkills(string className) => className is "Burst";
 }
 
 

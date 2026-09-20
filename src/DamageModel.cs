@@ -22,7 +22,11 @@ internal enum ScalingKind
 }
 
 /// <summary>一张牌在本回合的可量化效果。</summary>
-internal sealed class CardEffect
+/// <remarks>
+/// 是 record 而不是 class：手上技法要"给手牌里某一张技能牌加奇巧"，
+/// 得复制一份带标记的实例（`effect with { IsSly = true }`），不能就地改（手牌对象在各搜索状态间共享）。
+/// </remarks>
+internal sealed record CardEffect
 {
     public required string Name { get; init; }
     public string Id { get; init; } = "";
@@ -119,6 +123,14 @@ internal sealed class CardEffect
     public bool NeedsPoisonedTarget { get; init; }
     /// <summary>回响斩击：每有一名敌人被击杀就重复一次全体伤害。</summary>
     public bool RepeatsOnKill { get; init; }
+    /// <summary>刀刃陷阱：把消耗牌堆里的 N 张小刀对同一目标打出（N 来自卡面 CalculatedShivs）。</summary>
+    public int ExhaustShivs { get; init; }
+    /// <summary>手上技法：给手牌中的一张技能牌添加奇巧。</summary>
+    public bool GrantsSlyToSkill { get; init; }
+    /// <summary>触媒：中毒额外触发 N 次（影响"中毒先手击杀"判定）。</summary>
+    public int GrantsAccelerant { get; init; }
+    /// <summary>爆发：本回合接下来 N 张技能牌额外打出一次。</summary>
+    public int DoublesNextSkills { get; init; }
 
 
 
@@ -167,7 +179,27 @@ internal sealed class SimEnemy
     public int VulnerableThisTurn { get; set; }
 
     public bool Alive => Hp > 0;
-    public bool DiesToPoison => Alive && Poison >= Hp;
+    public bool DiesToPoison => DiesToPoisonWith(0);
+
+    /// <summary>
+    /// 中毒先手击杀（算上触媒）：中毒触发 1+N 次，每次结算后层数 -1，
+    /// 所以总量 = stack + (stack-1) + … 。⚠️ "每次触发后减 1"是假设，待实机验证
+    /// （验证：9 层毒打 10 血怪，有触媒时应正好毒死）。
+    /// </summary>
+    public bool DiesToPoisonWith(int accelerant)
+    {
+        if (!Alive || Poison <= 0)
+            return false;
+        int ticks = 1 + Math.Max(0, accelerant);
+        int total = 0;
+        int stack = Poison;
+        for (int i = 0; i < ticks && stack > 0; i++)
+        {
+            total += stack;
+            stack--;
+        }
+        return total >= Hp;
+    }
 
     public int Incoming
     {
@@ -244,6 +276,8 @@ internal sealed class TurnAdvice
     public required IReadOnlyList<CardEffect> HandEffects { get; init; }
     /// <summary>解算时玩家身上已有的无实体层数（面板显示"来袭"时要按它折算）。</summary>
     public required int PlayerIntangible { get; init; }
+    /// <summary>解算时玩家身上的触媒层数（面板判断"中毒先手击杀"时要按它折算）。</summary>
+    public required int PlayerAccelerant { get; init; }
 }
 
 /// <summary>
@@ -306,22 +340,24 @@ internal static class DamageModel
         int accuracy = ReadPower<AccuracyPower>(me);
         // 无实体是"整场战斗有效"的能力：面板每次解算都要把玩家身上已有的读进来
         int playerIntangible = ReadPower<IntangiblePower>(me);
+        // 触媒同理（影响"中毒先手击杀"判定）
+        int playerAccelerant = ReadPower<AccelerantPower>(me);
+
+        // 小刀伤害：优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱/缩小等修正），
+        // 都没有小刀时退回手算。必须在 Analyze 之前算出来——刀刃陷阱的伤害 = 张数 × 小刀伤害。
+        decimal shivDamage = FindShivDamage(hand, drawPile, sample)
+            ?? BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0);
 
         var analyzeContext = new AnalyzeContext
         {
             Target = sample,
             Enemies = enemies,
             DrawPileCount = drawPile.Count,
+            ShivDamage = shivDamage,
         };
 
         List<CardEffect> handEffects = hand.Select(c => Analyze(c, analyzeContext)).ToList();
         List<CardEffect> drawEffects = drawPile.Select(c => Analyze(c, analyzeContext)).ToList();
-
-        // 生成小刀的伤害优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱以及缩小之类的全局修正），
-        // 手上和抽牌堆里都没有小刀时才退回手算公式。
-        decimal? shivPreview = FindShivDamage(handEffects, drawEffects);
-        decimal shivDamage = shivPreview
-            ?? BuildShivDamage(sample, strength, accuracy, ReadPower<WeakPower>(me) > 0);
 
         var context = new SearchContext
         {
@@ -339,6 +375,7 @@ internal static class DamageModel
             Draw = new Queue<CardEffect>(drawEffects),
             Enemies = enemies.Select(e => e.Clone()).ToList(),
             Intangible = playerIntangible,
+            Accelerant = playerAccelerant,
         }, 0);
 
         return new TurnAdvice
@@ -351,16 +388,22 @@ internal static class DamageModel
             NodesExplored = context.Nodes,
             HandEffects = handEffects,
             PlayerIntangible = playerIntangible,
+            PlayerAccelerant = playerAccelerant,
         };
     }
 
-    /// <summary>场上/抽牌堆里第一张真实小刀的伤害（游戏预览值）。</summary>
-    private static decimal? FindShivDamage(IEnumerable<CardEffect> handEffects, IEnumerable<CardEffect> drawEffects)
+    /// <summary>手牌/抽牌堆里第一张真实小刀的伤害（游戏预览值）；都没有小刀时返回 null。</summary>
+    private static decimal? FindShivDamage(IReadOnlyList<CardModel> hand, IReadOnlyList<CardModel> drawPile, Creature? target)
     {
-        foreach (CardEffect effect in handEffects.Concat(drawEffects))
+        if (target is null)
+            return null;
+        foreach (CardModel card in hand.Concat(drawPile))
         {
-            if (effect.Supported && effect.Damage > 0m && SilentLogic.IsShivCard(effect.ClassName))
-                return effect.Damage;
+            if (!SilentLogic.IsShivCard(card.GetType().Name))
+                continue;
+            decimal damage = EstimateDamage(card, target);
+            if (damage > 0m)
+                return damage;
         }
         return null;
     }
@@ -370,6 +413,8 @@ internal static class DamageModel
         public Creature? Target { get; init; }
         public required IReadOnlyList<SimEnemy> Enemies { get; init; }
         public required int DrawPileCount { get; init; }
+        /// <summary>小刀伤害（刀刃陷阱要按张数乘以它）。</summary>
+        public required decimal ShivDamage { get; init; }
     }
 
     private sealed class SearchState
@@ -407,6 +452,10 @@ internal static class DamageModel
         public int StrangleTarget { get; set; }
         /// <summary>猛扑：下一张技能牌免费。</summary>
         public bool NextSkillFree { get; set; }
+        /// <summary>触媒：中毒额外触发次数（影响中毒先手击杀判定）。</summary>
+        public int Accelerant { get; set; }
+        /// <summary>爆发：接下来还有几张技能牌会被额外打出一次。</summary>
+        public int DoubleSkillCount { get; set; }
         public List<CardEffect> Hand { get; init; } = new();
         public Queue<CardEffect> Draw { get; init; } = new();
         public List<SimEnemy> Enemies { get; init; } = new();
@@ -498,43 +547,56 @@ internal static class DamageModel
 
         private void PlayCard(SearchState state, int handIndex, CardEffect card, int targetIndex, int depth, int effectiveCost)
         {
+            // 爆发：这张牌如果是"本回合额外打出一次"的技能牌，卡牌自身的载荷整体翻倍。
+            // ⚠️ 只翻倍"这张牌自己的效果"，不重复"每打出一张牌"类触发（余像/群蛇形态/紧勒）——
+            //    后者的语义是"打出行为"而非"结算内容"，这条是假设，已记在 STATUS 待实机确认。
+            bool doubled = card.IsSkill && state.DoubleSkillCount > 0;
+            int times = doubled ? 2 : 1;
+
             var next = new SearchState
             {
-                Energy = state.Energy - effectiveCost + card.EnergyGain,
-                Dex = state.Dex + card.Dexterity,
+                Energy = state.Energy - effectiveCost + card.EnergyGain * times,
+                Dex = state.Dex + card.Dexterity * times,
                 DiscardedThisTurn = state.DiscardedThisTurn,
                 AttacksPlayed = state.AttacksPlayed + (card.IsAttack ? 1 : 0),
                 HandFree = state.HandFree || card.HandFree,
                 NoDraw = state.NoDraw || card.NoDraw,
-                ShivBonus = state.ShivBonus + card.ShivBonus,
-                BlockPerCard = state.BlockPerCard + card.BlockPerCard,
-                Envenom = state.Envenom + card.Envenom,
-                PoisonPerDraw = state.PoisonPerDraw + card.PoisonPerDraw,
-                DamagePerCardPlayed = state.DamagePerCardPlayed + card.DamagePerCardPlayed,
-                DamagePerDraw = state.DamagePerDraw + card.DamagePerDraw,
+                ShivBonus = state.ShivBonus + card.ShivBonus * times,
+                BlockPerCard = state.BlockPerCard + card.BlockPerCard * times,
+                Envenom = state.Envenom + card.Envenom * times,
+                PoisonPerDraw = state.PoisonPerDraw + card.PoisonPerDraw * times,
+                DamagePerCardPlayed = state.DamagePerCardPlayed + card.DamagePerCardPlayed * times,
+                DamagePerDraw = state.DamagePerDraw + card.DamagePerDraw * times,
                 DoubleBlock = state.DoubleBlock || card.DoubleBlock,
-                FirstShivBonus = state.FirstShivBonus + card.FirstShivBonus,
+                FirstShivBonus = state.FirstShivBonus + card.FirstShivBonus * times,
                 FirstShivBonusUsed = state.FirstShivBonusUsed,
                 ShivsHitAll = state.ShivsHitAll || card.MakesShivsHitAll,
                 TrackingNew = state.TrackingNew || card.GrantsTracking,
-                Intangible = state.Intangible + card.GrantsIntangible,
+                Intangible = state.Intangible + card.GrantsIntangible * times,
+                Accelerant = state.Accelerant + card.GrantsAccelerant * times,
                 // 紧勒：以最后打出的一张为准（同一回合叠加两次没有意义，取大的那个更安全）
-                StrangleAmount = card.Strangle > state.StrangleAmount ? card.Strangle : state.StrangleAmount,
+                StrangleAmount = card.Strangle * times > state.StrangleAmount ? card.Strangle * times : state.StrangleAmount,
                 StrangleTarget = card.Strangle > 0 ? targetIndex : state.StrangleTarget,
                 // 猛扑：打出后置位；打出一张技能牌就消耗掉；其它牌不影响
                 NextSkillFree = card.MakesNextSkillFree || (state.NextSkillFree && !card.IsSkill),
+                // 爆发：打出就置位（打出 N 张）；打出一张技能牌消耗一层；其它牌不影响
+                DoubleSkillCount = card.DoublesNextSkills > 0
+                    ? card.DoublesNextSkills
+                    : (card.IsSkill ? Math.Max(0, state.DoubleSkillCount - 1) : state.DoubleSkillCount),
                 Hand = new List<CardEffect>(state.Hand),
                 Draw = new Queue<CardEffect>(state.Draw),
                 Enemies = state.Enemies.Select(e => e.Clone()).ToList(),
                 Actions = new List<PlannedAction>(state.Actions),
                 Damage = state.Damage,
                 // 格挡 = 卡面格挡(+敏捷) + 余像"每张牌 N 格挡"，本回合这些都属于"获得的格挡"，融入暗影时一起翻倍。
-                // ⚠️ 余像那一项以前被写成 `card.Block > 0 ? 0 : ...`，导致出格挡牌时不加，这里必须无条件计入。
+                // ⚠️ 余像那一项以前被写成 `card.Block > 0 ? 0 : ...`，导致出格挡牌时不加，这里必须无条件计入；
+                //    余像是"每打出一张牌"类触发，所以不随爆发翻倍。
                 Block = state.Block
-                            + (BlockGain(card, state) + (card.Block > 0 ? state.Dex : 0) + state.BlockPerCard)
+                            + ((BlockGain(card, state) + (card.Block > 0 ? state.Dex : 0)) * times
+                               + state.BlockPerCard)
                               * (state.DoubleBlock || card.DoubleBlock ? 2 : 1),
                 EnergySpent = state.EnergySpent + effectiveCost,
-                EnergyGained = state.EnergyGained + card.EnergyGain,
+                EnergyGained = state.EnergyGained + card.EnergyGain * times,
             };
 
             CardEffect played = next.Hand[handIndex];
@@ -591,6 +653,17 @@ internal static class DamageModel
                     next.FirstShivBonusUsed = true;
                 }
             }
+
+            // 刀刃陷阱：把消耗牌堆里的 N 张小刀对同一目标打出（张数取卡面 CalculatedShivs）
+            if (played.ExhaustShivs > 0)
+                damage = played.ExhaustShivs * Shiv.Damage;
+
+            // 爆发：技能牌额外打出一次 → 这张牌自己的载荷整体翻倍
+            damage *= times;
+
+            // 手上技法：给手牌里"弃掉最划算"的那张技能牌加奇巧（爆发翻倍时加两张）
+            for (int t = 0; t < times && played.GrantsSlyToSkill; t++)
+                MarkBestSkillSly(next);
 
             // 紧勒：本回合之后每打出一张牌，该名敌人都会失去 N 点生命（无视格挡）
             if (state.StrangleAmount > 0)
@@ -655,13 +728,13 @@ internal static class DamageModel
             foreach (SimEnemy debuffTarget in debuffTargets)
             {
                 if (played.Poison > 0 && !(played.NeedsPoisonedTarget && debuffTarget.Poison == 0))
-                    debuffTarget.Poison += played.Poison;
+                    debuffTarget.Poison += played.Poison * times;
                 if (played.Weak > 0)
                 {
                     // 只有"原本不虚弱"的敌人才会因为本回合的虚弱额外减伤（意图伤害里已含它当前的虚弱）
                     if (debuffTarget.Weak == 0)
-                        debuffTarget.WeakThisTurn += played.Weak;
-                    debuffTarget.Weak += played.Weak;
+                        debuffTarget.WeakThisTurn += played.Weak * times;
+                    debuffTarget.Weak += played.Weak * times;
                 }
                 if (played.IsXCost && played.WeakPerX > 0)
                 {
@@ -671,8 +744,8 @@ internal static class DamageModel
                 }
                 if (played.Vulnerable > 0)
                 {
-                    debuffTarget.Vulnerable += played.Vulnerable;
-                    debuffTarget.VulnerableThisTurn += played.Vulnerable;
+                    debuffTarget.Vulnerable += played.Vulnerable * times;
+                    debuffTarget.VulnerableThisTurn += played.Vulnerable * times;
                 }
                 if (played.IsXCost && played.StrengthLossPerX > 0)
                     debuffTarget.StrengthLoss += played.StrengthLossPerX * effectiveCost;
@@ -688,10 +761,23 @@ internal static class DamageModel
                 }
             }
 
+            // 毒性爆发：给完中毒后立即触发一次（中毒伤害无视格挡；爆发翻倍时触发两次）
+            for (int t = 0; t < times; t++)
+            {
+                if (played.TriggersPoisonNow)
+                {
+                    foreach (SimEnemy victim in next.Enemies.Where(e => e.Alive).ToList())
+                    {
+                        if (victim.Poison > 0)
+                            ApplyDamageIgnoringBlock(next, victim, victim.Poison);
+                    }
+                }
+            }
+
             if (played.StrengthLoss > 0 && played.HitsAll)
             {
                 foreach (SimEnemy enemy in next.Enemies.Where(e => e.Alive))
-                    enemy.StrengthLoss += played.StrengthLoss;
+                    enemy.StrengthLoss += played.StrengthLoss * times;
             }
 
             // 弃掉整手牌：钢铁风暴（每张换小刀）或计算下注（抽等量）
@@ -719,8 +805,8 @@ internal static class DamageModel
                 // 暗影步：弃整手且不补充
             }
 
-            // 普通弃牌（含被弃触发）
-            for (int d = 0; d < played.Discard && next.Hand.Count > 0; d++)
+            // 普通弃牌（含被弃触发）；爆发翻倍时弃两次
+            for (int d = 0; d < played.Discard * times && next.Hand.Count > 0; d++)
             {
                 int pick = ChooseDiscard(next.Hand);
                 CardEffect discarded = next.Hand[pick];
@@ -729,12 +815,12 @@ internal static class DamageModel
                 ApplyDiscardTrigger(next, discarded);
             }
 
-            // 抽牌（子弹时间后本回合不能再抽）
+            // 抽牌（子弹时间后本回合不能再抽）；爆发翻倍时抽两次
             if (!next.NoDraw && played.Draw > 0)
-                HandleDraws(next, played.Draw);
+                HandleDraws(next, played.Draw * times);
 
             // 生成小刀
-            for (int s = 0; s < played.Shivs; s++)
+            for (int s = 0; s < played.Shivs * times; s++)
                 next.Hand.Add(NormalizeShiv(next, Shiv));
 
             // 群蛇形态：每打出一张牌对随机一名敌人造成伤害（这里按残血最少的目标近似）
@@ -746,7 +832,39 @@ internal static class DamageModel
             }
 
             Dfs(next, depth + 1);
-        }        /// <summary>
+        }        /// <summary>"这张牌被弃掉时自动打出"的价值——挑弃哪张奇巧、以及手上技法给谁加奇巧都用它。</summary>
+        private static decimal SlyValue(CardEffect c)
+            => c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
+               + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
+
+        /// <summary>
+        /// 手上技法：给手牌里最值得"被弃掉自动打出"的技能牌加奇巧。
+        /// 选择由模型替玩家做（面板本来就是给建议的）；手里没有可加的技能牌就不加。
+        /// </summary>
+        private static void MarkBestSkillSly(SearchState state)
+        {
+            int best = -1;
+            decimal bestScore = -1m;
+            for (int i = 0; i < state.Hand.Count; i++)
+            {
+                CardEffect c = state.Hand[i];
+                if (c.IsSly || !c.IsSkill)
+                    continue;
+                decimal score = SlyValue(c);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            if (best < 0)
+                return;
+            CardEffect marked = state.Hand[best];
+            // Id 必须变：状态指纹只按 Id 区分手牌，否则"加了奇巧"与"没加"会被当成同一状态而被剪掉
+            state.Hand[best] = marked with { IsSly = true, Id = marked.Id + "_SLY" };
+        }
+
+        /// <summary>
         /// 弃牌优先级：先弃「奇巧(Sly)」牌——它们被弃时会自动打出（免费生效），挑价值最高的那张；
         /// 手上没有奇巧牌时，弃期望价值最低的那张。
         /// </summary>
@@ -758,9 +876,7 @@ internal static class DamageModel
             {
                 if (!hand[i].IsSly)
                     continue;
-                CardEffect c = hand[i];
-                decimal score = c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
-                                + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
+                decimal score = SlyValue(hand[i]);
                 if (score > bestSlyScore)
                 {
                     bestSlyScore = score;
@@ -946,12 +1062,13 @@ internal static class DamageModel
               .Append(state.HandFree ? 1 : 0).Append(state.NoDraw ? 1 : 0).Append(state.DoubleBlock ? 1 : 0)
               .Append(state.FirstShivBonusUsed ? 1 : 0).Append(state.ShivsHitAll ? 1 : 0)
               .Append(state.TrackingNew ? 1 : 0).Append(state.NextSkillFree ? 1 : 0)
+              .Append(state.DoubleSkillCount).Append('|')
               .Append('|').Append(state.ShivBonus).Append('|').Append(state.BlockPerCard).Append('|')
               .Append(state.Envenom).Append('|').Append(state.PoisonPerDraw).Append('|')
               .Append(state.DamagePerCardPlayed).Append('|').Append(state.DamagePerDraw).Append('|')
               .Append(state.FirstShivBonus).Append('|')
               .Append(state.Intangible).Append('|').Append(state.StrangleAmount).Append('|')
-              .Append(state.StrangleTarget).Append('|');
+              .Append(state.StrangleTarget).Append('|').Append(state.Accelerant).Append('|');
 
             foreach (string id in state.Hand.Select(c => c.Id).OrderBy(x => x, StringComparer.Ordinal))
                 sb.Append(id).Append(',');
@@ -994,7 +1111,7 @@ internal static class DamageModel
 
         private void Consider(SearchState state)
         {
-            int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoison).Sum(e => e.IncomingWith(state.Intangible));
+            int incoming = state.Enemies.Where(e => e.Alive && !e.DiesToPoisonWith(state.Accelerant)).Sum(e => e.IncomingWith(state.Intangible));
             int totalBlock = CurrentBlock + state.Block;
             int hpLoss = Math.Max(0, incoming - totalBlock);
             bool lethal = hpLoss >= CurrentHp;
@@ -1009,7 +1126,7 @@ internal static class DamageModel
                 HpLoss = hpLoss,
                 Lethal = lethal,
 
-                Kills = state.Enemies.Count(e => !e.Alive || e.DiesToPoison),
+                Kills = state.Enemies.Count(e => !e.Alive || e.DiesToPoisonWith(state.Accelerant)),
                 EnemiesAfter = state.Enemies.Select(e => e.Clone()).ToList(),
             };
 
@@ -1306,6 +1423,17 @@ internal static class DamageModel
         bool nextSkillFree = SilentLogic.MakesNextSkillFree(className);
         bool needsPoisonedTarget = SilentLogic.NeedsPoisonedTarget(className);
         bool repeatsOnKill = SilentLogic.RepeatsOnKill(className);
+        // 覆盖率补齐：显性"未建模"的 2 张 + 几处变量里看不到的第二效果
+        int exhaustShivs = SilentLogic.PlaysExhaustShivs(className)
+            ? (int)Math.Floor(ReadPreview(card, "CalculatedShivs"))
+            : 0;
+        if (exhaustShivs > 0)
+            damage = exhaustShivs * (context?.ShivDamage ?? 0m);
+        bool grantsSlyToSkill = SilentLogic.GrantsSlyToSkill(className);
+        int grantsAccelerant = SilentLogic.GrantsAccelerant(className) ? ReadInt(card, "Accelerant") : 0;
+        int doublesNextSkills = SilentLogic.DoublesNextSkills(className)
+            ? Math.Max(1, ReadInt(card, "Skills"))
+            : 0;
         if (SilentLogic.VulnerableFromPowerVar(className) && vulnerable == 0)
             vulnerable = ReadInt(card, "Power");
         string powerNote = SilentLogic.ImmediatePowerNote(className);
@@ -1340,7 +1468,8 @@ internal static class DamageModel
 
             || doubleBlock || firstShivBonus != 0 || removesBlock || makesShivsHitAll
             || grantsTracking || grantsIntangible != 0 || strangle != 0 || nextSkillFree
-            || needsPoisonedTarget || repeatsOnKill;
+            || needsPoisonedTarget || repeatsOnKill || exhaustShivs != 0 || grantsSlyToSkill
+            || grantsAccelerant != 0 || doublesNextSkills != 0;
 
 
 
@@ -1428,6 +1557,10 @@ internal static class DamageModel
             MakesNextSkillFree = nextSkillFree,
             NeedsPoisonedTarget = needsPoisonedTarget,
             RepeatsOnKill = repeatsOnKill,
+            ExhaustShivs = exhaustShivs,
+            GrantsSlyToSkill = grantsSlyToSkill,
+            GrantsAccelerant = grantsAccelerant,
+            DoublesNextSkills = doublesNextSkills,
 
 
 
@@ -1650,11 +1783,19 @@ internal static class DamageModel
         }
     }
 
+    /// <summary>
+    /// 当前费用：走 <see cref="CardEnergyCost.GetWithModifiers"/>，这样"精密瞄准：本回合每打出过一张技能牌，
+    /// 其耗能减少 1"以及遗物/其它牌带来的费用修正都自动覆盖（以前读 Canonical = 基础费用）。
+    /// X 费单独处理：GetWithModifiers 对 X 没有意义，仍用 Canonical。
+    /// </summary>
     private static int SafeCost(CardModel card)
     {
         try
         {
-            return card.EnergyCost?.Canonical ?? 99;
+            CardEnergyCost? cost = card.EnergyCost;
+            if (cost is null)
+                return 99;
+            return cost.CostsX ? cost.Canonical : cost.GetResolved();
         }
         catch
         {
@@ -1722,11 +1863,15 @@ internal static class DamageModel
         }
     }
 
+    /// <summary>敌人身上关键 debuff 的指纹（面板刷新判断用：只有中毒层数变化时也要重算）。</summary>
+    public static string DebuffKey(Creature enemy)
+        => $"{ReadPower<PoisonPower>(enemy)}/{ReadPower<WeakPower>(enemy)}"
+         + $"/{ReadPower<VulnerablePower>(enemy)}/{ReadPower<StrengthPower>(enemy)}";
+
     /// <summary>诊断用：敌人身上的关键 debuff（中毒/易伤/虚弱/力量），含队友施加的。</summary>
 
 
     public static string DescribePowers(Creature enemy)
-
 
     {
 
