@@ -526,7 +526,7 @@ public partial class AdvisorRoot : CanvasLayer
         Player? me = LocalContext.GetMe(state);
         PlayerCombatState? pcs = me?.PlayerCombatState;
         Creature? myCreature = me?.Creature;
-        if (pcs is null || myCreature is null)
+        if (me is null || pcs is null || myCreature is null)
         {
             SetSimple("读取不到自己的战斗状态");
             return;
@@ -538,6 +538,12 @@ public partial class AdvisorRoot : CanvasLayer
             SetSimple("没有存活的敌人");
             return;
         }
+
+#if !WORKSHOP
+        // 差分验证：面板每次刷新都用实机状态核对上一次预测 ——
+        // 这样"照预测打完之后"的那一刻必然被抓到，不需要玩家掐时机按 F5。
+        CloneProbe.CheckPendingLive(me, state);
+#endif
 
         if (pcs.Phase != PlayerTurnPhase.Play)
         {
