@@ -60,6 +60,14 @@ internal sealed class SimState
     public bool NoDraw { get; set; }
     /// <summary>爆发：接下来还有几张技能牌会被额外打出一次（载荷翻倍）。</summary>
     public int DoubleSkillCount { get; set; }
+    /// <summary>刀扇：本回合所有小刀改为攻击全体。</summary>
+    public bool ShivsHitAll { get; set; }
+    /// <summary>紧勒：之后每打出一张牌，该敌人失去的生命值。</summary>
+    public int StrangleAmount { get; set; }
+    /// <summary>紧勒的目标编号（0＝未指定）。</summary>
+    public int StrangleTarget { get; set; }
+    /// <summary>触媒：中毒额外触发次数（影响结束回合的中毒结算）。</summary>
+    public int Accelerant { get; set; }
     /// <summary>第几回合（+ 敌人名）用来给差分验证做"身份校验"，避免跨战斗误判成通过。</summary>
     public int RoundNumber { get; init; }
 
@@ -77,6 +85,8 @@ internal sealed class SimState
     /// 此时"生成小刀"的牌会如实标注未生成，而不是瞎编伤害）。
     /// </summary>
     public CardEffect? ShivTemplate { get; set; }
+    /// <summary>刀扇之后的模板（攻击全体）—— Id 加 _AOE 后缀，才能与主模型生成的小刀对上。</summary>
+    public CardEffect? ShivTemplateAoe { get; set; }
     /// <summary>RNG 状态的序列化快照（不透明令牌，后续"分支独占 RNG"要用它）。</summary>
     public string RngToken { get; init; } = "";
 
@@ -106,6 +116,8 @@ internal sealed class SimState
             // 所以这里只要认 NoDraw 就够了，费用不用再特殊处理
             NoDraw = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
             HandFree = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
+            // 触媒同理（影响结束回合的中毒结算）
+            Accelerant = DamageModel.ReadPowerAmount<AccelerantPower>(self),
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,
@@ -143,6 +155,7 @@ internal sealed class SimState
             if (SilentLogic.IsShivCard(e.ClassName))
             {
                 sim.ShivTemplate = e;
+                sim.ShivTemplateAoe = e with { Id = e.Id + "_AOE", HitsAll = true };
                 break;
             }
         }
@@ -304,6 +317,31 @@ internal static class SimCommands
         }
         List<SimFoe> targets = card.HitsAll ? AliveFoes(sim) : Targ(sim, targetIndex);
 
+        // 紧勒：**之前**打出的紧勒会在每张牌上触发（无视格挡）—— 放在这张牌的效果之前
+        if (sim.StrangleAmount > 0)
+        {
+            SimFoe? strangled = sim.Foes.FirstOrDefault(f => f.Index == sim.StrangleTarget && f.Alive);
+            if (strangled is not null)
+            {
+                int hpBefore = strangled.Hp;
+                strangled.Hp = Math.Max(0, strangled.Hp - sim.StrangleAmount);
+                parts.Add($"紧勒 → {strangled.Index}号 失去 {hpBefore - strangled.Hp} 生命");
+            }
+        }
+
+        // 暴露：结算前先清掉目标格挡（否则后面的伤害会被格挡吃掉）
+        if (card.RemovesBlock)
+        {
+            foreach (SimFoe foe in targets)
+            {
+                if (foe.Block > 0)
+                {
+                    parts.Add($"暴露：清除 {foe.Index}号 格挡 {foe.Block}");
+                    foe.Block = 0;
+                }
+            }
+        }
+
         // ① 小刀的精准加成 + X 费按投入能量放大 + 爆发翻倍
         decimal baseDamage = card.IsXCost ? card.Damage * cost : card.Damage;
         if (baseDamage > 0 && SilentLogic.IsShivCard(card.ClassName) && sim.ShivBonus > 0)
@@ -374,9 +412,51 @@ internal static class SimCommands
                 parts.Add(Draw(sim, card.Draw * times));
         }
 
-        // ⑦ 生成小刀
+        // ⑦ 刀扇（本回合小刀改打全体）与生成小刀
+        if (card.MakesShivsHitAll && !sim.ShivsHitAll)
+        {
+            sim.ShivsHitAll = true;
+            if (sim.ShivTemplateAoe is not null)
+            {
+                for (int i = 0; i < sim.Hand.Count; i++)
+                {
+                    if (SilentLogic.IsShivCard(sim.Hand[i].ClassName))
+                        sim.Hand[i] = sim.ShivTemplateAoe;
+                }
+            }
+            parts.Add("刀扇：本回合小刀改为攻击全体");
+        }
         if (card.Shivs > 0)
             AddShivs(sim, card.Shivs * times, parts);
+
+        // 手上技法：给"弃掉最划算"的那张技能牌加奇巧（模型替你挑，与主模型一致）
+        if (card.GrantsSlyToSkill)
+        {
+            int best = -1;
+            decimal bestScore = -1m;
+            for (int i = 0; i < sim.Hand.Count; i++)
+            {
+                CardEffect c = sim.Hand[i];
+                if (c.IsSly || !c.IsSkill)
+                    continue;
+                decimal score = SlyScore(c);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            if (best < 0)
+            {
+                parts.Add("手上技法：手里没有可加奇巧的技能牌");
+            }
+            else
+            {
+                CardEffect marked = sim.Hand[best];
+                sim.Hand[best] = marked with { IsSly = true, Id = marked.Id + "_SLY" };
+                parts.Add($"手上技法：给「{marked.Name}」加奇巧");
+            }
+        }
 
         // ⑧ "每打出一张牌"类触发（**用打这张牌之前的层数** —— 实测：打出余像自己
         //    不触发余像，所以必须先触发再累加。见差分对照：预测 8 格挡 / 实机 7）
@@ -397,22 +477,35 @@ internal static class SimCommands
         if (card.PoisonPerDraw > 0) { sim.PoisonPerDraw += card.PoisonPerDraw * times; gained.Add($"腐蚀波 {card.PoisonPerDraw * times}"); }
         if (card.DamagePerCardPlayed > 0) { sim.DamagePerCardPlayed += card.DamagePerCardPlayed * times; gained.Add($"群蛇形态 {card.DamagePerCardPlayed * times}"); }
         if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw * times; gained.Add($"速行者 {card.DamagePerDraw * times}"); }
+        if (card.GrantsAccelerant > 0) { sim.Accelerant += card.GrantsAccelerant * times; gained.Add($"触媒 {card.GrantsAccelerant * times}"); }
+        if (card.Strangle > 0)
+        {
+            sim.StrangleAmount = card.Strangle * times;
+            sim.StrangleTarget = targetIndex;
+            gained.Add($"紧勒（{targetIndex}号 之后每张牌失去 {sim.StrangleAmount} 生命）");
+        }
         if (gained.Count > 0)
             parts.Add("获得能力：" + string.Join("、", gained));
 
         return string.Join("；", parts);
     }
 
-    /// <summary>生成 N 张小刀（按模板），返回实际生成数。没有模板时返回 0（调用方负责说明）。</summary>
+    /// <summary>生成 N 张小刀（按模板，刀扇之后用打全体那版），返回实际生成数。</summary>
     private static int AddShivs(SimState sim, int count, List<string> parts)
     {
-        if (sim.ShivTemplate is null || count <= 0)
+        CardEffect? template = sim.ShivsHitAll ? sim.ShivTemplateAoe : sim.ShivTemplate;
+        if (template is null || count <= 0)
             return 0;
         for (int s = 0; s < count; s++)
-            sim.Hand.Add(sim.ShivTemplate with { Source = null });
+            sim.Hand.Add(template with { Source = null });
         parts.Add($"生成 {count} 张小刀（手牌 {sim.Hand.Count}）");
         return count;
     }
+
+    /// <summary>"被弃掉自动打出"的价值 —— 与主模型的 SlyValue 同一公式（两处需同步）。</summary>
+    private static decimal SlyScore(CardEffect c)
+        => c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
+           + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
 
     /// <summary>普通弃牌：挑 N 张弃掉（被弃的奇巧牌会自动打出）。</summary>
     private static void DiscardCards(SimState sim, int count, List<string> parts)
@@ -478,8 +571,7 @@ internal static class SimCommands
             CardEffect c = hand[i];
             if (!c.IsSly)
                 continue;
-            decimal score = c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
-                            + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
+            decimal score = SlyScore(c);
             if (score > bestSlyScore)
             {
                 bestSlyScore = score;
@@ -524,10 +616,20 @@ internal static class SimCommands
         {
             if (foe.Poison <= 0)
                 continue;
+            // 触媒：中毒额外触发 N 次（每次结算后层数 -1）—— 与主模型 DiesToPoisonWith 同一算法
+            int ticks = 1 + Math.Max(0, sim.Accelerant);
+            int total = 0;
+            int stack = foe.Poison;
+            for (int t = 0; t < ticks && stack > 0; t++)
+            {
+                total += stack;
+                stack--;
+            }
             int before = foe.Hp;
-            foe.Hp = Math.Max(0, foe.Hp - foe.Poison);
-            parts.Add($"{foe.Index}号中毒结算 {foe.Poison} 点（{before}→{foe.Hp}）");
-            foe.Poison = Math.Max(0, foe.Poison - 1);
+            foe.Hp = Math.Max(0, foe.Hp - total);
+            parts.Add($"{foe.Index}号中毒结算 {total} 点（{before}→{foe.Hp}）"
+                      + (sim.Accelerant > 0 ? $"（触媒 ×{ticks} 次）" : ""));
+            foe.Poison = Math.Max(0, stack);
         }
         int clearedBlock = sim.PlayerBlock;
         sim.PlayerBlock = 0;
