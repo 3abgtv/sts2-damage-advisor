@@ -220,7 +220,8 @@ public partial class AdvisorRoot : CanvasLayer
         _probeLine = MakeLabel("", 12, new Color(1f, 0.78f, 0.45f));
         _probeLine.Visible = false;
         box.AddChild(_probeLine);
-#endif        AddChild(_panel);
+#endif
+        AddChild(_panel);
         ApplyCollapse();
     }
 
