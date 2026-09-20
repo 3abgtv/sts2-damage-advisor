@@ -22,7 +22,69 @@ internal sealed class SimFoe
     /// <summary>本回合**新上**的易伤：后续攻击 ×1.5（卡面预览里已含"场上已有的易伤"，所以只认新上的，避免重复计算）。</summary>
     public bool VulnerableNew { get; set; }
 
+    // ---- 来袭伤害：**只用于打分**（掉血/必死判定），模拟本身不结算敌人行动 —— 那是第 5 步 ----
+    /// <summary>意图原始总伤害（捕获期从主模型抄来）。</summary>
+    public int BaseIncoming { get; set; }
+    /// <summary>意图攻击段数（力量削减按段数生效）。</summary>
+    public int Hits { get; set; } = 1;
+    /// <summary>本回合被削掉的力量。</summary>
+    public int StrengthLoss { get; set; }
+    /// <summary>本回合**新上**的虚弱：意图伤害里已算过"当前虚弱"，只有新上的才在这里再乘一次。</summary>
+    public int WeakThisTurn { get; set; }
+
     public bool Alive => Hp > 0;
+
+    /// <summary>照主模型 SimEnemy.Incoming 的算法折算来袭伤害（两边必须同式，否则打分不可比）。</summary>
+    public int Incoming
+    {
+        get
+        {
+            int damage = Math.Max(0, BaseIncoming - StrengthLoss * Math.Max(1, Hits));
+            if (WeakThisTurn > 0)
+                damage = damage * 3 / 4;
+            return damage;
+        }
+    }
+
+    /// <summary>算上"无实体"的来袭伤害：无实体时每段攻击只造成 1 点。</summary>
+    public int IncomingWith(int playerIntangible)
+        => playerIntangible > 0 ? (BaseIncoming > 0 ? Math.Max(1, Hits) : 0) : Incoming;
+
+    /// <summary>
+    /// 中毒先手击杀（算上触媒）：中毒触发 1+N 次，每次结算后层数 -1。
+    /// ⚠️ "每次触发后减 1"是假设，待实机验证 —— 与主模型同一算法，改一处必须改两处。
+    /// </summary>
+    public bool DiesToPoisonWith(int accelerant)
+    {
+        if (!Alive || Poison <= 0)
+            return false;
+        int ticks = 1 + Math.Max(0, accelerant);
+        int total = 0;
+        int stack = Poison;
+        for (int i = 0; i < ticks && stack > 0; i++)
+        {
+            total += stack;
+            stack--;
+        }
+        return total >= Hp;
+    }
+
+    public SimFoe Clone() => new()
+    {
+        Index = Index,
+        Name = Name,
+        Hp = Hp,
+        Block = Block,
+        Poison = Poison,
+        Weak = Weak,
+        Vulnerable = Vulnerable,
+        Strength = Strength,
+        VulnerableNew = VulnerableNew,
+        BaseIncoming = BaseIncoming,
+        Hits = Hits,
+        StrengthLoss = StrengthLoss,
+        WeakThisTurn = WeakThisTurn,
+    };
 }
 
 /// <summary>
@@ -90,6 +152,44 @@ internal sealed class SimState
     /// <summary>RNG 状态的序列化快照（不透明令牌，后续"分支独占 RNG"要用它）。</summary>
     public string RngToken { get; init; } = "";
 
+    /// <summary>
+    /// 分支用深拷贝。数值成员都是值类型，手牌/抽牌堆装的是**不可变**的 CardEffect 记录，
+    /// 所以两者浅拷列表就够（搜索只改列表本身：RemoveAt/Add，不改牌）。
+    /// 只有敌人必须逐个深拷 —— 伤害/中毒/虚弱是就地改的。
+    /// </summary>
+    public SimState Clone() => new()
+    {
+        PlayerHp = PlayerHp,
+        PlayerBlock = PlayerBlock,
+        PlayerEnergy = PlayerEnergy,
+        PlayerMaxEnergy = PlayerMaxEnergy,
+        PlayerStrength = PlayerStrength,
+        PlayerDexterity = PlayerDexterity,
+        BlockPerCard = BlockPerCard,
+        ShivBonus = ShivBonus,
+        Envenom = Envenom,
+        PoisonPerDraw = PoisonPerDraw,
+        DamagePerCardPlayed = DamagePerCardPlayed,
+        DamagePerDraw = DamagePerDraw,
+        DoubleBlock = DoubleBlock,
+        HandFree = HandFree,
+        NoDraw = NoDraw,
+        DoubleSkillCount = DoubleSkillCount,
+        ShivsHitAll = ShivsHitAll,
+        StrangleAmount = StrangleAmount,
+        StrangleTarget = StrangleTarget,
+        Accelerant = Accelerant,
+        RoundNumber = RoundNumber,
+        Hand = new List<CardEffect>(Hand),
+        Draw = new Queue<CardEffect>(Draw),
+        DiscardCount = DiscardCount,
+        ExhaustCount = ExhaustCount,
+        Foes = Foes.Select(f => f.Clone()).ToList(),
+        ShivTemplate = ShivTemplate,
+        ShivTemplateAoe = ShivTemplateAoe,
+        RngToken = RngToken,
+    };
+
     /// <summary>从 live 状态捕获一份影子状态（必须在主线程调用）。</summary>
     public static SimState Capture(Player me, CombatState state, TurnAdvice advice)
     {
@@ -130,6 +230,12 @@ internal sealed class SimState
             index++;
             if (!c.IsAlive)
                 continue;
+            // 来袭伤害从**活体**读，不从 advice.EnemiesBefore 抄：那份列表就是搜索自己就地改的
+            // 那一份，搜索跑完后它已经带着"某条分支上打过的削力量/虚弱"，抄过来会让新引擎
+            // 拿别人的计划当既成事实，从而低估掉血。
+            // StrengthLoss / WeakThisTurn 恒为 0：本回合**已经**削过的力量、上过的虚弱，
+            // 游戏意图里早就算进去了（IncomingOf 读的就是那份意图），再记一次就是重复扣。
+            (int incoming, int hits) = DamageModel.IncomingOf(c, self);
             sim.Foes.Add(new SimFoe
             {
                 Index = index,
@@ -140,6 +246,8 @@ internal sealed class SimState
                 Weak = DamageModel.ReadPowerAmount<WeakPower>(c),
                 Vulnerable = DamageModel.ReadPowerAmount<VulnerablePower>(c),
                 Strength = DamageModel.ReadPowerAmount<StrengthPower>(c),
+                BaseIncoming = incoming,
+                Hits = hits,
             });
         }
 

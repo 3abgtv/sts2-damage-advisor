@@ -320,6 +320,14 @@ internal static class DamageModel
 // 既覆盖足够的搜索空间，又避免主线程卡帧。
     private const int MaxNodes = 25000;
 
+    /// <summary>
+    /// 打分口径的唯一实现在 SearchContext 里（它是搜索的一部分，所以留在那儿）。
+    /// 新引擎（SimSearch）走这个转发共用同一份 —— 打分顺序是**两个引擎必须一致的规格**，
+    /// 各写一份等于在差分里多塞一个变量，把真正的规则差异淹掉。
+    /// </summary>
+    internal static bool IsBetter(TurnPlan candidate, TurnPlan current)
+        => SearchContext.IsBetter(candidate, current);
+
     public static TurnAdvice Solve(
         IReadOnlyList<CardModel> hand,
         IReadOnlyList<CardModel> drawPile,
@@ -1275,8 +1283,11 @@ internal static class DamageModel
         /// 两种优先级模式（F6 切换）：
         ///   保命优先：不死 → 掉血 ≤ 预算（超预算则少掉血优先）→ 优先击杀 → 最大伤害
         ///   输出优先：不死 → 优先击杀 → 最大伤害 → 掉血最少
+        ///
+        /// internal 是为了让外层 DamageModel.IsBetter 转发出去（嵌套类型的 private 外层够不着）。
+        /// 有效可见性仍受外层 SearchContext 的 private 限制，不会真的漏到外面。
         /// </summary>
-        private static bool IsBetter(TurnPlan candidate, TurnPlan current)
+        internal static bool IsBetter(TurnPlan candidate, TurnPlan current)
         {
             if (candidate.Lethal != current.Lethal)
                 return !candidate.Lethal;

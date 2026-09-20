@@ -36,7 +36,8 @@ $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
 $hasInject = $ascii.Contains("InjectNextTestCard") -or $ascii.Contains("TestCards")
 $hasDump = $ascii.Contains("DumpSilentPool")
 # 克隆探测与影子状态（engine/rewrite 阶段）同理：只在开发版里，工坊版不许带
-$hasProbe = $ascii.Contains("CloneProbe") -or $ascii.Contains("SimCommands") -or $ascii.Contains("SimState")
+# SimSearch/SimFoe 是第四步（新引擎搜索）新增的，名字一并列上 —— 漏了新类型这校验就形同虚设
+$hasProbe = $ascii.Contains("CloneProbe") -or $ascii.Contains("SimCommands") -or $ascii.Contains("SimState") -or $ascii.Contains("SimSearch") -or $ascii.Contains("SimFoe")
 $wsVersion = "$($manifest.version)-ws"
 $hasWsTag = $utf16.Contains($wsVersion)
 

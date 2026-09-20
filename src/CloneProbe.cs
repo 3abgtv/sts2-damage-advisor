@@ -405,8 +405,12 @@ internal static class CloneProbe
     }
 
     /// <summary>
-    /// F5：把**主模型的整套推荐**喂给新引擎重放，面板上给出完整顺序与预期终态，
-    /// 并把终态登记为待核对的预测 —— 之后每次面板刷新自动比对，不需要玩家掐时机。
+    /// F5：让新引擎**自己搜一遍**，把它的计划和主模型并排列出来，
+    /// 并把**搜索自己走到的终态**登记为待核对预测 —— 之后每次面板刷新自动比对。
+    ///
+    /// 与"重放主模型推荐"那条路径的区别：终态是搜索走出来的那一步本身，不是照别人的计划
+    /// 复现出来的。所以计划里出现生成牌（小刀等）照样能核对 —— 影子自己生成了小刀，
+    /// 不需要去活体手牌里找，旧路径那条"生成牌无法重放"的限制在这条路上不存在。
     /// </summary>
     private static string SimSelfCheck(Player me, CombatState state)
     {
@@ -430,42 +434,43 @@ internal static class CloneProbe
                 me.Creature.CurrentHp,
                 me.Creature.Block);
 
-            if (advice.Plan.Actions.Count == 0)
-            {
-                LastSequence = "";
-                return "主模型没给出推荐（本回合没有可打的有效牌）";
-            }
+            SimState root = SimState.Capture(me, state, advice);
+            SimSearchResult search = SimSearch.Solve(root, advice.PlayerIntangible);
 
-            // 顺序里带上目标（目标牌写成"牌名[2号]"，与面板计划的写法一致）——
-            // 不带目标就复现不了同一终态，多怪时"照这个顺序打"等于没给。
-            string label = string.Join(" → ", advice.Plan.Actions.Select(
-                a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
-            string before = BuildSignature(me, state);
-            SimState sim = SimState.Capture(me, state, advice);
-            int skipped = ReplayPlan(sim, advice);
+            string engineOrder = Show(Order(search.Plan));
+            string modelOrder = Show(Order(advice.Plan));
+            bool samePlan = engineOrder == modelOrder;
 
-            if (skipped > 0)
+            // ---- 面板：两边并排，顺带说清"照哪一行打" ----
+            string verdict = samePlan
+                ? "✓ 两边方案一致"
+                : "✗ 两边方案不同 → 照**新引擎**那行打（这次验的是它）";
+            if (search.PlanGaps.Count > 0)
+                verdict += $"　[计划含未镜像语义：{string.Join("、", search.PlanGaps)} → 本回合不核对]";
+            else if (search.HandGaps.Count > 0)
+                verdict += $"　[手牌含未镜像语义：{string.Join("、", search.HandGaps)} → 数字可能偏小]";
+
+            LastSequence = $"新引擎：{engineOrder}　{Score(search.Plan)}（{search.Nodes} 状态）\n"
+                         + $"主模型：{modelOrder}　{Score(advice.Plan)}\n"
+                         + verdict;
+
+            // ---- 登记预测：含未镜像语义、或两边都不打牌的计划不登记 ----
+            // （前者比出来必然是错的，后者是空过 —— 报了只会误导）
+            if (search.PlanGaps.Count > 0 || search.Plan.Actions.Count == 0)
             {
-                // 计划里有生成牌（小刀等）：影子手里根本没有这几张，打不出来，终态必然对不上。
-                // 这种回合**不登记预测** —— 否则会一直打"对照"，把"重放不了"误报成"算错了"。
                 _hasPending = false;
-                LastSequence = "推荐顺序：" + label
-                             + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）"
-                             + $"　[{skipped} 张生成牌无法重放 → 本回合不自动核对]";
             }
             else
             {
-                SavePending(label, before, sim);
-                // 面板上直接显示"照这个顺序打"，省得去翻日志
-                LastSequence = "推荐顺序：" + label
-                             + $"（预期 伤害 {advice.Plan.Damage:0.#} / 格挡 +{advice.Plan.Block} / 掉血 {advice.Plan.HpLoss}）";
+                SavePending(engineOrder, BuildSignature(me, state), search.Terminal);
             }
 
-            string foes = string.Join("、", sim.Foes.Where(f => f.Alive)
+            string foes = string.Join("、", search.Terminal.Foes.Where(f => f.Alive)
                 .Select(f => $"{f.Index}号 {f.Hp}血/{f.Block}格挡{StatusText(f)}"));
-            return $"重放主模型推荐：{label}　→ 打完 敌 {foes}；"
-                 + $"我 {sim.PlayerEnergy}能量/{sim.PlayerBlock}格挡/{sim.PlayerHp}血{PowerText(sim)}"
-                 + (skipped > 0 ? $"　（{skipped} 张未能重放：计划里生成的小刀等）" : "")
+            return $"新引擎自算：{engineOrder}　→ 打完 敌 {foes}；"
+                 + $"我 {search.Terminal.PlayerEnergy}能量/{search.Terminal.PlayerBlock}格挡{PowerText(search.Terminal)}"
+                 + (samePlan ? "　（与主模型一致）" : "　⚠ 与主模型方案不同")
+                 + (search.PlanGaps.Count > 0 ? "　[含未镜像语义，未登记核对]" : "")
                  + " ← 照这个顺序打，面板会自动核对终态";
         }
         catch (Exception ex)
@@ -473,6 +478,19 @@ internal static class CloneProbe
             return "模拟自检异常：" + ex.GetType().Name + " " + ex.Message;
         }
     }
+
+    /// <summary>
+    /// 把一套计划写成"牌名[目标号] → …"。**必须带目标编号** ——
+    /// 不带就复现不了同一终态，多怪时"照这个顺序打"等于没给。
+    /// </summary>
+    private static string Order(TurnPlan plan)
+        => string.Join(" → ", plan.Actions.Select(
+            a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
+
+    private static string Show(string order) => order.Length == 0 ? "不打牌" : order;
+
+    private static string Score(TurnPlan plan)
+        => $"伤害 {plan.Damage:0.#} / 格挡 +{plan.Block} / 掉血 {plan.HpLoss}";
 
     /// <summary>真机指纹：把会影响推算的 live 值拼成一个字符串，用于前后逐字比对。</summary>
     private static string Fingerprint(Player me, CombatState state)
