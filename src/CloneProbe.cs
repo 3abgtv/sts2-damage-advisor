@@ -486,10 +486,10 @@ internal static class CloneProbe
     /// <summary>
     /// 把一套计划写成"牌名[目标号] → …"。**必须带目标编号** ——
     /// 不带就复现不了同一终态，多怪时"照这个顺序打"等于没给。
+    /// 渲染走 DamageModel.DescribeAction（唯一实现，面板与快照日志共用同一份）。
     /// </summary>
     private static string Order(TurnPlan plan)
-        => string.Join(" → ", plan.Actions.Select(
-            a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
+        => string.Join(" → ", plan.Actions.Select(a => DamageModel.DescribeAction(a, false)));
 
     private static string Show(string order) => order.Length == 0 ? "不打牌" : order;
 

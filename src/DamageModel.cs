@@ -269,6 +269,16 @@ internal sealed class PlannedAction
 {
     public required CardEffect Card { get; init; }
     public required int TargetIndex { get; init; }
+    /// <summary>
+    /// 打出这张牌时要**主动选择**弃掉哪些牌（杂技/生存者这类）。弃整手那种没得选的、
+    /// 以及弃牌堆本身的记账都不进来 —— 这个字段的唯一用途是告诉玩家"弃哪张"，
+    /// 玩家没得选的情况写进去只是噪音。
+    ///
+    /// 是可变的 List 而不是 init 集合：弃牌发生在"打出这张牌"的**同一次**结算里，
+    /// 那一步才刚 new 出这个 PlannedAction（见 ApplyCard），所以就地追加不会波及
+    /// 兄弟分支或被 Consider 抄进 TurnPlan 的旧动作。
+    /// </summary>
+    public List<CardEffect> Discards { get; init; } = new();
 }
 
 internal sealed class TurnPlan
@@ -308,6 +318,15 @@ internal sealed class TurnAdvice
     public required int PlayerAccelerant { get; init; }
     /// <summary>什么都不打（现在就结束回合）时，下回合能确定的资源。</summary>
     public required NextTurnResources NextTurnBaseline { get; init; }
+    /// <summary>
+    /// 生成小刀用的模板。影子状态以前是"扫手牌/抽牌堆里有没有真小刀"，扫不到就留空——
+    /// 2026-09-20 实机证实了后果：手里只有刀刃之舞、没有真小刀时，影子生成 **0 张**小刀，
+    /// 于是认为刀刃之舞一文不值、永远不选它，而且**一声不响**（差分看不见"它避开的那个
+    /// 计划其实更好"）。改由这里下发：两个引擎用**同一把**小刀，差分才比的是别的东西。
+    /// </summary>
+    public required CardEffect ShivTemplate { get; init; }
+    /// <summary>刀扇之后的版本（打全体）。</summary>
+    public required CardEffect ShivAoeTemplate { get; init; }
 }
 
 /// <summary>
@@ -327,6 +346,21 @@ internal static class DamageModel
     /// </summary>
     internal static bool IsBetter(TurnPlan candidate, TurnPlan current)
         => SearchContext.IsBetter(candidate, current);
+
+    /// <summary>
+    /// 计划里"打这张牌、目标是谁、要不要弃牌"的**唯一**渲染 —— 面板、快照日志、F5 三处共用。
+    /// 各写一份必然漂移：弃牌提示是后加的，漏掉任何一处就等于那个界面没提示。
+    /// arrow=true 是快照日志的 `打击->1号` 写法，false 是面板/F5 的 `打击[1号]` 写法。
+    /// </summary>
+    internal static string DescribeAction(PlannedAction action, bool arrow)
+    {
+        string head = action.TargetIndex > 0
+            ? (arrow ? $"{action.Card.Name}->{action.TargetIndex}号" : $"{action.Card.Name}[{action.TargetIndex}号]")
+            : action.Card.Name;
+        if (action.Discards.Count == 0)
+            return head;
+        return head + "（弃 " + string.Join("、", action.Discards.Select(d => d.Name)) + "）";
+    }
 
     public static TurnAdvice Solve(
         IReadOnlyList<CardModel> hand,
@@ -451,6 +485,8 @@ internal static class DamageModel
             PlayerIntangible = playerIntangible,
             PlayerAccelerant = playerAccelerant,
             NextTurnBaseline = context.Baseline,
+            ShivTemplate = context.Shiv,
+            ShivAoeTemplate = context.ShivAll,
         };
     }
 
@@ -930,6 +966,10 @@ internal static class DamageModel
                 CardEffect discarded = next.Hand[pick];
                 next.Hand.RemoveAt(pick);
                 next.DiscardedThisTurn++;
+                // 记到"打出这张牌"那一步上，面板才能告诉你弃哪张 —— 弃牌由模型挑，
+                // 玩家只看到"打杂技"是不知道怎么打的
+                if (next.Actions.Count > 0)
+                    next.Actions[^1].Discards.Add(discarded);
                 ApplyDiscardTrigger(next, discarded);
             }
 

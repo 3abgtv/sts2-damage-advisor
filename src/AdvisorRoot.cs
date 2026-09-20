@@ -620,7 +620,7 @@ public partial class AdvisorRoot : CanvasLayer
                 Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} blk={se.Block} incoming={se.IncomingWith(advice.PlayerIntangible)} | {intent}"
                           + $" | 按我算={byMe} 按全队算={byTeam} | buff[{buffs}]");
             }
-            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
+            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => DamageModel.DescribeAction(a, true)))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
             Entry.Log($"  下回合 现在结束=[{advice.NextTurnBaseline}] 照推荐打=[{plan.NextTurn}]");
         }
 
@@ -676,7 +676,7 @@ public partial class AdvisorRoot : CanvasLayer
             }
             else
             {
-                string order = string.Join(" → ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
+                string order = string.Join(" → ", plan.Actions.Select(a => DamageModel.DescribeAction(a, false)));
                 int energyLeft = pcs.Energy + plan.EnergyGained - plan.EnergySpent;
                 string hurt = plan.HpLoss == 0 ? "预计无伤" : $"预计掉血 {plan.HpLoss}";
                 int weakApplied = plan.Actions.Sum(a => a.Card.Weak);

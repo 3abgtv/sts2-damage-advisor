@@ -54,15 +54,33 @@ internal static class SimSearch
         TurnPlan plan = ctx.Best ?? EmptyPlan(root);
         SimState terminal = ctx.BestTerminal ?? root.Clone();
 
+        List<string> planGaps = new(GapsIn(plan.Actions.Select(a => a.Card)));
+        List<string> handGaps = new(ctx.HandGaps);
+        // 小刀模板为空时，"生成小刀"的牌会被按 0 张算。这条缺口**不是卡牌字段能表达的**
+        // ——同一张刀刃之舞，手上有真小刀时是对的、没有时是错的——所以台账里挂不上，
+        // 得单独判一次。它最阴的地方是让影子静默地低估这类牌、进而选错计划：
+        // 计划里没有它 → 进不了 PlanGaps，只有手牌那一层拦得住（2026-09-20 实机踩过）。
+        if (root.ShivTemplate is null)
+        {
+            const string why = "生成小刀（影子里没有小刀模板 → 按 0 张算）";
+            if (plan.Actions.Any(a => MakesShivs(a.Card)))
+                planGaps.Add(why);
+            else if (root.Hand.Concat(root.Draw).Any(MakesShivs))
+                handGaps.Add(why);
+        }
+
         return new SimSearchResult
         {
             Plan = plan,
             Terminal = terminal,
             Nodes = ctx.Nodes,
-            PlanGaps = GapsIn(plan.Actions.Select(a => a.Card)),
-            HandGaps = ctx.HandGaps,
+            PlanGaps = planGaps,
+            HandGaps = handGaps,
         };
     }
+
+    /// <summary>这张牌会不会"生成小刀"（两条来源：牌面小刀数、弃整手换小刀）。</summary>
+    private static bool MakesShivs(CardEffect c) => c.Shivs > 0 || c.DiscardHandForShivs;
 
     private sealed class Ctx
     {
@@ -126,9 +144,12 @@ internal static class SimSearch
         int depth, int spent, List<PlannedAction> path, CardEffect card)
     {
         SimState child = sim.Clone();
-        SimCommands.PlayCard(child, handIndex, targetIndex);
+        // 先建好这一步、再把它的 Discards 交给 PlayCard 填：弃哪张是 PlayCard 里才定的，
+        // 而面板要显示它（"打杂技"没说清怎么打）
+        var action = new PlannedAction { Card = card, TargetIndex = targetIndex };
+        SimCommands.PlayCard(child, handIndex, targetIndex, action.Discards);
 
-        path.Add(new PlannedAction { Card = card, TargetIndex = targetIndex });
+        path.Add(action);
         Dfs(ctx, child, depth + 1, spent, path);
         path.RemoveAt(path.Count - 1);
     }

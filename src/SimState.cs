@@ -257,16 +257,11 @@ internal sealed class SimState
         foreach (CardEffect e in advice.DrawEffects)
             sim.Draw.Enqueue(e with { Source = null });
 
-        // 小刀模板：优先手牌/抽牌堆里已有的小刀（卡面值含精准/力量等修正）
-        foreach (CardEffect e in sim.Hand.Concat(sim.Draw))
-        {
-            if (SilentLogic.IsShivCard(e.ClassName))
-            {
-                sim.ShivTemplate = e;
-                sim.ShivTemplateAoe = e with { Id = e.Id + "_AOE", HitsAll = true };
-                break;
-            }
-        }
+        // 小刀模板由**主模型的解算**下发（同一把刀、同一个伤害值）。
+        // 以前是扫手牌/抽牌堆里有没有真小刀 —— 手里只有刀刃之舞时扫不到，模板留空，
+        // 于是影子生成 0 张小刀、认为刀刃之舞一文不值、永远不选它，而且一声不响。
+        sim.ShivTemplate = advice.ShivTemplate;
+        sim.ShivTemplateAoe = advice.ShivAoeTemplate;
         return sim;
     }
 
@@ -385,7 +380,8 @@ internal static class SimCommands
     /// 卡面格挡/能量/抽牌/状态 → 能力牌自身的持续效果 → "每打出一张牌"类触发。
     /// ⚠️ 伤害用卡面预览值（它已含力量/虚弱/易伤）；"每打出一张牌"类触发不随爆发翻倍（与主模型同一约定）。
     /// </summary>
-    public static string PlayCard(SimState sim, int handIndex, int targetIndex)
+    public static string PlayCard(SimState sim, int handIndex, int targetIndex,
+        List<CardEffect>? discards = null)
     {
         if (handIndex < 0 || handIndex >= sim.Hand.Count)
             return "手牌索引越界";
@@ -509,7 +505,7 @@ internal static class SimCommands
 
         // ⑤ 普通弃牌
         if (card.Discard > 0)
-            DiscardCards(sim, card.Discard * times, parts);
+            DiscardCards(sim, card.Discard * times, parts, discards);
 
         // ⑥ 抽牌（子弹时间之后本回合不能再抽）
         if (card.Draw * times > 0)
@@ -535,7 +531,13 @@ internal static class SimCommands
             parts.Add("刀扇：本回合小刀改为攻击全体");
         }
         if (card.Shivs > 0)
-            AddShivs(sim, card.Shivs * times, parts);
+        {
+            int made = AddShivs(sim, card.Shivs * times, parts);
+            // 造不出来必须出声：影子少了几张小刀 = 这张牌被静默低估，进而选错计划，
+            // 而差分看不见"它避开的那个计划其实更好"（对照 499 行那条一样的备注）
+            if (made == 0)
+                parts.Add($"应生成 {card.Shivs * times} 张小刀但无模板（未生成）");
+        }
 
         // 手上技法：给"弃掉最划算"的那张技能牌加奇巧（模型替你挑，与主模型一致）
         if (card.GrantsSlyToSkill)
@@ -615,8 +617,13 @@ internal static class SimCommands
         => c.Damage + c.Block * 0.8m + c.Poison * 2m + c.Shivs * 4m
            + c.EnergyGain * 10m + c.Draw * 3m + c.Dexterity * 2m;
 
-    /// <summary>普通弃牌：挑 N 张弃掉（被弃的奇巧牌会自动打出）。</summary>
-    private static void DiscardCards(SimState sim, int count, List<string> parts)
+    /// <summary>
+    /// 普通弃牌：挑 N 张弃掉（被弃的奇巧牌会自动打出）。
+    /// discards 非空时把选中的牌交出去 —— 面板要靠它告诉玩家"弃哪张"，
+    /// 而这一步的选择是模型替玩家做的（与主模型 ChooseDiscard 同一策略）。
+    /// </summary>
+    private static void DiscardCards(SimState sim, int count, List<string> parts,
+        List<CardEffect>? discards = null)
     {
         for (int d = 0; d < count && sim.Hand.Count > 0; d++)
         {
@@ -624,6 +631,7 @@ internal static class SimCommands
             CardEffect discarded = sim.Hand[pick];
             sim.Hand.RemoveAt(pick);
             parts.Add($"弃「{discarded.Name}」");
+            discards?.Add(discarded);
             AutoPlayIfSly(sim, discarded, parts);
         }
     }
