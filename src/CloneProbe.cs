@@ -465,10 +465,14 @@ internal static class CloneProbe
                 SavePending(engineOrder, BuildSignature(me, state), search.Terminal);
             }
 
+            // 两边计划都写进日志：面板会刷新、日志留下来。以前这里只有新引擎那一边加一句
+            // "与主模型方案不同"，于是分歧**差在哪**只能靠人在面板消失前记住 —— 白跑一趟差分。
+            // 单行不换行：日志是一行一条记录，`grep 模拟自检` 要能一次捞到完整的那次。
             string foes = string.Join("、", search.Terminal.Foes.Where(f => f.Alive)
                 .Select(f => $"{f.Index}号 {f.Hp}血/{f.Block}格挡{StatusText(f)}"));
-            return $"新引擎自算：{engineOrder}　→ 打完 敌 {foes}；"
-                 + $"我 {search.Terminal.PlayerEnergy}能量/{search.Terminal.PlayerBlock}格挡{PowerText(search.Terminal)}"
+            return $"新引擎自算：{engineOrder}　{Score(search.Plan)}（{search.Nodes} 状态）"
+                 + $"　→ 打完 敌 {foes}；我 {search.Terminal.PlayerEnergy}能量/{search.Terminal.PlayerBlock}格挡{PowerText(search.Terminal)}"
+                 + $"　▓ 主模型：{modelOrder}　{Score(advice.Plan)}"
                  + (samePlan ? "　（与主模型一致）" : "　⚠ 与主模型方案不同")
                  + (search.PlanGaps.Count > 0 ? "　[含未镜像语义，未登记核对]" : "")
                  + " ← 照这个顺序打，面板会自动核对终态";
