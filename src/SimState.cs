@@ -66,6 +66,11 @@ internal sealed class SimState
     public int ExhaustCount { get; init; }
 
     public List<SimFoe> Foes { get; init; } = new();
+    /// <summary>
+    /// 生成小刀用的模板（取手牌/抽牌堆里真实小刀的卡面值；场上没有小刀时为空，
+    /// 此时"生成小刀"的牌会如实标注未生成，而不是瞎编伤害）。
+    /// </summary>
+    public CardEffect? ShivTemplate { get; set; }
     /// <summary>RNG 状态的序列化快照（不透明令牌，后续"分支独占 RNG"要用它）。</summary>
     public string RngToken { get; init; } = "";
 
@@ -120,6 +125,16 @@ internal sealed class SimState
             sim.Hand.Add(e with { Source = null });
         foreach (CardEffect e in advice.DrawEffects)
             sim.Draw.Enqueue(e with { Source = null });
+
+        // 小刀模板：优先手牌/抽牌堆里已有的小刀（卡面值含精准/力量等修正）
+        foreach (CardEffect e in sim.Hand.Concat(sim.Draw))
+        {
+            if (SilentLogic.IsShivCard(e.ClassName))
+            {
+                sim.ShivTemplate = e;
+                break;
+            }
+        }
         return sim;
     }
 
@@ -312,6 +327,21 @@ internal static class SimCommands
         if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw; gained.Add($"速行者 {card.DamagePerDraw}"); }
         if (gained.Count > 0)
             parts.Add("获得能力：" + string.Join("、", gained));
+
+        // ⑥ 生成小刀（刀刃之舞/斗篷与匕首/袖里乾坤/刀扇…）
+        if (card.Shivs > 0)
+        {
+            if (sim.ShivTemplate is null)
+            {
+                parts.Add($"应生成 {card.Shivs} 张小刀，但场上没有小刀可作模板（未生成）");
+            }
+            else
+            {
+                for (int s = 0; s < card.Shivs; s++)
+                    sim.Hand.Add(sim.ShivTemplate with { Source = null });
+                parts.Add($"生成 {card.Shivs} 张小刀（手牌 {sim.Hand.Count}）");
+            }
+        }
 
         return string.Join("；", parts);
     }
