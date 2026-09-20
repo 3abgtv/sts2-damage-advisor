@@ -147,14 +147,25 @@ internal static class CloneProbe
                 }
                 else
                 {
+                    // 先把"克隆成功 + 是否共享引用"落下来 —— 万一后面的写入测试抛异常，这半句也不会丢
                     bool sharesVars = ReferenceEquals(clone.DynamicVars, live.DynamicVars);
-                    // 克隆体是我们自己的实例，改它安全：计数器 +1，真机必须纹丝不动
-                    int liveBefore = live.DisplayAmount;
-                    clone.IncrementStackCount();
-                    bool leaked = live.DisplayAmount != liveBefore;
+                    string mut;
+                    if (live.IsStackable)
+                    {
+                        // 可叠加遗物才能改计数；克隆体是我们自己的实例，改它安全
+                        int before = live.DisplayAmount;
+                        clone.IncrementStackCount();
+                        mut = live.DisplayAmount != before
+                            ? "计数器写入：✗ 泄漏！真机被改了"
+                            : "计数器写入：✓ 隔离（真机未变）";
+                    }
+                    else
+                    {
+                        mut = "非可叠加遗物 → 跳过写入测试（只看是否共享引用）";
+                    }
                     parts.Add($"遗物 {live.Title}：深克隆成功，共享 DynamicVars={sharesVars}"
                               + (sharesVars ? " ← 仍共享（需要更深的拷贝）" : " ← 不共享")
-                              + (leaked ? " | 计数器写入：✗ 泄漏！" : " | 计数器写入：✓ 隔离（真机未变）"));
+                              + " | " + mut);
                 }
             }
             catch (Exception ex)
