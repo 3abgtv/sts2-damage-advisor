@@ -252,6 +252,9 @@ internal static class SimSearch
         (c => c.GrantsTracking, "跟踪（模拟里不记）"),
         (c => c.FirstShivBonus > 0, "首刀加成（模拟里不记）"),
         (c => c.MakesNextSkillFree, "下一张技能免费（模拟里不认）"),
+        // 爆发漏了会**悄悄带偏计划**（2026-09-20 实机抓到）：影子算不出"技能双触发"那条线，
+        // 就不会选它，于是它根本进不了 PlanGaps —— 只有手牌那一层（HandGaps）拦得住。
+        (c => c.DoublesNextSkills > 0, "爆发（技能额外打出一次，模拟里不认）"),
         (c => c.StrengthLoss > 0 || c.StrengthLossPerX > 0, "削力量（模拟不改敌人力量）"),
         (c => c.Weak > 0 || c.WeakPerX > 0, "上虚弱（模拟不计入本回合来袭减伤）"),
         (c => c.DamagePerDiscard > 0, "每弃一张牌增伤（模拟里不数弃牌）"),
