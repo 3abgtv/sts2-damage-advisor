@@ -291,7 +291,18 @@ internal static class SimCommands
             if (card.Vulnerable > 0) parts.Add(ApplyVulnerable(foe, card.Vulnerable));
         }
 
-        // ④ 能力牌自身的持续效果
+        // ⑤ "每打出一张牌"类触发（**用打这张牌之前的层数** —— 实测：打出余像自己
+        //    不触发余像，所以必须先触发再累加。见差分对照：预测 8 格挡 / 实机 7）
+        if (sim.BlockPerCard > 0)
+            parts.Add($"余像 → {GainBlock(sim, sim.BlockPerCard)}");
+        if (sim.DamagePerCardPlayed > 0)
+        {
+            SimFoe? victim = sim.Foes.Where(f => f.Alive).OrderBy(f => f.Hp).FirstOrDefault();
+            if (victim is not null)
+                parts.Add($"群蛇形态 → {victim.Index}号 {DealDamage(victim, sim.DamagePerCardPlayed)}");
+        }
+
+        // ④ 能力牌自身的持续效果（放在触发之后：这张牌自己不吃自己的加成）
         var gained = new List<string>();
         if (card.BlockPerCard > 0) { sim.BlockPerCard += card.BlockPerCard; gained.Add($"余像 {card.BlockPerCard}"); }
         if (card.ShivBonus > 0) { sim.ShivBonus += card.ShivBonus; gained.Add($"精准 {card.ShivBonus}"); }
@@ -301,16 +312,6 @@ internal static class SimCommands
         if (card.DamagePerDraw > 0) { sim.DamagePerDraw += card.DamagePerDraw; gained.Add($"速行者 {card.DamagePerDraw}"); }
         if (gained.Count > 0)
             parts.Add("获得能力：" + string.Join("、", gained));
-
-        // ⑤ "每打出一张牌"类触发（含这张牌自己）
-        if (sim.BlockPerCard > 0)
-            parts.Add($"余像 → {GainBlock(sim, sim.BlockPerCard)}");
-        if (sim.DamagePerCardPlayed > 0)
-        {
-            SimFoe? victim = sim.Foes.Where(f => f.Alive).OrderBy(f => f.Hp).FirstOrDefault();
-            if (victim is not null)
-                parts.Add($"群蛇形态 → {victim.Index}号 {DealDamage(victim, sim.DamagePerCardPlayed)}");
-        }
 
         return string.Join("；", parts);
     }
