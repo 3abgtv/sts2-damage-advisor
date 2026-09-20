@@ -52,7 +52,7 @@ public partial class AdvisorRoot : CanvasLayer
 #if WORKSHOP
     private const string InjectHint = "";
 #else
-    private const string InjectHint = " · F9 注入";
+    private const string InjectHint = " · F9 注入 · F5 克隆探测";
 #endif
 
     private DateTime _lastCfgWrite;
@@ -157,6 +157,7 @@ public partial class AdvisorRoot : CanvasLayer
         EnsureStarted();        TickToggle();
 #if !WORKSHOP
         TickInject();
+        TickProbe();
 #endif
         TickBudget();
         TickCollapse();
@@ -338,6 +339,24 @@ public partial class AdvisorRoot : CanvasLayer
     }
 
 #if !WORKSHOP
+    private bool _previousProbeKey;
+
+    /// <summary>F5：跑一次"捕获 + 克隆"可行性探测（engine/rewrite 第一阶段），只读真机。</summary>
+    private void TickProbe()
+    {
+        bool pressed = Input.IsKeyPressed(Key.F5);
+        if (pressed && !_previousProbeKey)
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            Player? me = state is null ? null : LocalContext.GetMe(state);
+            if (state is null || me is null)
+                Entry.Log("探测：不在战斗中或找不到自己");
+            else
+                CloneProbe.Run(me, state);
+        }
+        _previousProbeKey = pressed;
+    }
+
     private void TickInject()
     {
         bool pressed = Input.IsKeyPressed(Key.F9);
