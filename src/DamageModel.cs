@@ -300,6 +300,8 @@ internal sealed class TurnAdvice
     public required int CurrentHp { get; init; }
     public required int NodesExplored { get; init; }
     public required IReadOnlyList<CardEffect> HandEffects { get; init; }
+    /// <summary>抽牌堆的解析结果（按抽牌顺序）。engine/rewrite 的影子状态要用它模拟抽牌。</summary>
+    public required IReadOnlyList<CardEffect> DrawEffects { get; init; }
     /// <summary>解算时玩家身上已有的无实体层数（面板显示"来袭"时要按它折算）。</summary>
     public required int PlayerIntangible { get; init; }
     /// <summary>解算时玩家身上的触媒层数（面板判断"中毒先手击杀"时要按它折算）。</summary>
@@ -437,6 +439,7 @@ internal static class DamageModel
             CurrentHp = currentHp,
             NodesExplored = context.Nodes,
             HandEffects = handEffects,
+            DrawEffects = drawEffects,
             PlayerIntangible = playerIntangible,
             PlayerAccelerant = playerAccelerant,
             NextTurnBaseline = context.Baseline,
@@ -1859,6 +1862,9 @@ internal static class DamageModel
             return 0m;
         }
     }
+
+    /// <summary>读某个 Power 的层数（联机时队友施加的也读得到）。engine/rewrite 捕获影子状态时用。</summary>
+    public static int ReadPowerAmount<T>(Creature creature) where T : PowerModel => ReadPower<T>(creature);
 
     private static int ReadPower<T>(Creature creature) where T : PowerModel
     {

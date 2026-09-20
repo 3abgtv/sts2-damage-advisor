@@ -198,6 +198,17 @@ internal static class CloneProbe
         return clone as T;
     }
 
+    /// <summary>敌人状态的紧凑显示（只显示非 0 的项）。</summary>
+    private static string StatusText(SimFoe foe)
+    {
+        var parts = new List<string>();
+        if (foe.Poison > 0) parts.Add($"中毒{foe.Poison}");
+        if (foe.Weak > 0) parts.Add($"虚弱{foe.Weak}");
+        if (foe.Vulnerable > 0) parts.Add($"易伤{foe.Vulnerable}");
+        if (foe.Strength > 0) parts.Add($"力量{foe.Strength}");
+        return parts.Count == 0 ? "" : "，状态[" + string.Join(" ", parts) + "]";
+    }
+
     /// <summary>遗物的本地化名（RelicModel.Title 是 LocString，直接 ToString 会得到原始键）。</summary>
     private static string RelicName(RelicModel relic)
     {
@@ -230,6 +241,7 @@ internal static class CloneProbe
     private static string _pendingCard = "";
     private static int _pendingFoeIndex;
     private static int _pendingFoeHp;
+    private static int _pendingFoePoison;
     private static int _pendingEnergy;
     private static string _pendingFoeName = "";
     private static int _pendingRound;
@@ -254,15 +266,15 @@ internal static class CloneProbe
             Entry.Log($"[差分] 上一次预测无法验证：状态已推进（预测时第 {_pendingRound} 回合的 {_pendingFoeName}，"
                       + $"现在是第 {sim.RoundNumber} 回合的 {foe.Name}）");
         }
-        else if (foe.Hp == _pendingFoeHp && sim.PlayerEnergy == _pendingEnergy)
+        else if (foe.Hp == _pendingFoeHp && foe.Poison == _pendingFoePoison && sim.PlayerEnergy == _pendingEnergy)
         {
-            Entry.Log($"[差分] ✓ 通过：实机与预测一致（第 {sim.RoundNumber} 回合打「{_pendingCard}」→ {_pendingFoeIndex}号 {foe.Hp}血、我 {sim.PlayerEnergy}能量）"
-                      + " —— 差分验证链闭环");
+            Entry.Log($"[差分] ✓ 通过：实机与预测一致（第 {sim.RoundNumber} 回合打「{_pendingCard}」→ {_pendingFoeIndex}号 "
+                      + $"{foe.Hp}血/中毒{foe.Poison}、我 {sim.PlayerEnergy}能量）—— 差分验证链闭环");
         }
         else
         {
-            Entry.Log($"[差分] 无法验证：预测 {_pendingFoeIndex}号 {_pendingFoeHp}血/我 {_pendingEnergy}能量，"
-                      + $"实机 {foe.Hp}血/我 {sim.PlayerEnergy}能量（可能没打那张牌，或被其它效果影响）");
+            Entry.Log($"[差分] 无法验证：预测 {_pendingFoeIndex}号 {_pendingFoeHp}血/中毒{_pendingFoePoison}/我 {_pendingEnergy}能量，"
+                      + $"实机 {foe.Hp}血/中毒{foe.Poison}/我 {sim.PlayerEnergy}能量（可能没打那张牌，或被其它效果影响）");
         }
         _hasPending = false;
     }
@@ -272,6 +284,7 @@ internal static class CloneProbe
         _pendingCard = card.Name;
         _pendingFoeIndex = foe.Index;
         _pendingFoeHp = foe.Hp;
+        _pendingFoePoison = foe.Poison;
         _pendingEnergy = sim.PlayerEnergy;
         _pendingFoeName = foe.Name;
         _pendingRound = sim.RoundNumber;
@@ -306,32 +319,49 @@ internal static class CloneProbe
                 me.Creature.CurrentHp,
                 me.Creature.Block);
 
-            SimState sim = SimState.Capture(me, state, advice.HandEffects);
+            SimState sim = SimState.Capture(me, state, advice);
             if (sim.Foes.Count == 0)
                 return "影子状态：没有存活敌人，跳过";
 
             // 先用当前实机状态核对上一次的预测（差分验证闭环）
             CheckPending(sim);
 
+            // 优先挑一张"上状态"的牌来测（中毒/虚弱/易伤是这轮新镜像的状态）；没有就退而测攻击
             int idx = -1;
-            for (int i = 0; i < advice.HandEffects.Count; i++)
+            bool isStatusTest = false;
+            for (int i = 0; i < sim.Hand.Count; i++)
             {
-                CardEffect c = advice.HandEffects[i];
-                if (c.Supported && c.IsAttack && c.Damage > 0 && !c.HitsAll)
+                CardEffect c = sim.Hand[i];
+                if (c.Supported && !c.HitsAll && (c.Poison > 0 || c.Weak > 0 || c.Vulnerable > 0) && c.Cost <= sim.PlayerEnergy)
                 {
                     idx = i;
+                    isStatusTest = true;
                     break;
                 }
             }
             if (idx < 0)
-                return $"影子状态已捕获（我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量，敌 {sim.Foes.Count} 只，手牌 {sim.Hand.Count} 张），但手里没有可测的单体攻击牌";
+            {
+                for (int i = 0; i < sim.Hand.Count; i++)
+                {
+                    CardEffect c = sim.Hand[i];
+                    if (c.Supported && c.IsAttack && c.Damage > 0 && !c.HitsAll && c.Cost <= sim.PlayerEnergy)
+                    {
+                        idx = i;
+                        break;
+                    }
+                }
+            }
+            if (idx < 0)
+                return $"影子状态已捕获（我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量，敌 {sim.Foes.Count} 只，手牌 {sim.Hand.Count} 张），但手里没有可测的牌";
 
             SimFoe foe = sim.Foes[0];
             CardEffect predicted = sim.Hand[idx];   // 记下要预测的这张牌（PlayCard 会把它移出手牌）
-            string before = $"我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量；敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡";
+            string before = $"我 {sim.PlayerHp}血/{sim.PlayerBlock}格挡/{sim.PlayerEnergy}能量；"
+                          + $"敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡{StatusText(foe)}";
             string result = SimCommands.PlayCard(sim, idx, foe.Index);
             SavePending(predicted, foe, sim);
-            return $"影子状态已捕获（{before}）→ {result} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡，我 {sim.PlayerEnergy}能量"
+            return $"影子状态已捕获（{before}）→ {result} → 打完：敌 {foe.Index}号 {foe.Hp}血/{foe.Block}格挡{StatusText(foe)}，"
+                 + $"我 {sim.PlayerEnergy}能量（{(isStatusTest ? "状态牌" : "攻击牌")}，手牌{sim.Hand.Count}/抽牌堆{sim.Draw.Count}）"
                  + " ← 实际打这一张，再按一次 F5 就会自动核对";
         }
         catch (Exception ex)
