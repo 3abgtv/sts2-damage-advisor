@@ -327,6 +327,11 @@ internal static class SimCommands
 
     public static string ApplyWeak(SimFoe foe, int amount)
     {
+        // 只有"原本不虚弱"的敌人才会因为本回合**新上**的虚弱额外减伤 —— 意图伤害里已经含了
+        // 它**当前**的虚弱，再乘一次就是重复扣。守卫必须与主模型 ApplyCard 里那个
+        // `if (debuffTarget.Weak == 0)` 同式，否则两边打分不可比。
+        if (foe.Weak == 0)
+            foe.WeakThisTurn += amount;
         foe.Weak += amount;
         return $"{foe.Index}号虚弱 +{amount}（现在 {foe.Weak}）";
     }

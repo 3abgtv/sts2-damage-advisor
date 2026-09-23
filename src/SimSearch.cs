@@ -277,7 +277,6 @@ internal static class SimSearch
         // 就不会选它，于是它根本进不了 PlanGaps —— 只有手牌那一层（HandGaps）拦得住。
         (c => c.DoublesNextSkills > 0, "爆发（技能额外打出一次，模拟里不认）"),
         (c => c.StrengthLoss > 0 || c.StrengthLossPerX > 0, "削力量（模拟不改敌人力量）"),
-        (c => c.Weak > 0 || c.WeakPerX > 0, "上虚弱（模拟不计入本回合来袭减伤）"),
         (c => c.DamagePerDiscard > 0, "每弃一张牌增伤（模拟里不数弃牌）"),
         (c => c.BlockIfSkillDrawn > 0, "逃脱计划（模拟不按抽到的牌判定）"),
         (c => c.TriggersPoisonNow, "毒性爆发（模拟不立即结算中毒）"),
