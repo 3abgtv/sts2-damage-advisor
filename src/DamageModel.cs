@@ -301,6 +301,47 @@ internal sealed class TurnPlan
     public NextTurnResources NextTurn { get; set; }
 }
 
+/// <summary>
+/// 解算那一刻**已经在场**的常驻能力 —— 一处读取、两个引擎共用。
+///
+/// 为什么要有这个对象：以前主模型和影子**各自读 live 能力**（影子读了 7 项、主模型一项都没读），
+/// 同一个 bug 的两个方向，两边还都以为自己是对的。收成值对象后两个引擎读同一份，
+/// 以后加字段也不可能只加一边。附带好处：tools/selfcheck 能直接构造它做测试，不用造 Player。
+///
+/// **只装"不在卡面预览值里"的能力。** 下面这些都已经体现在预览值里，播进来就是**重复计算**，
+/// 所以故意不在这里：Dex（卡面格挡已含敏捷）· ShivBonus（小刀模板已含精准）·
+/// DoubleBlock（融入暗影已进格挡预览）· FirstShivBonus（幻影之刃已进小刀预览）·
+/// HandFree / NextSkillFree（费用已走 GetResolved）· DiscardedThisTurn（铭记死亡惰性重算）。
+/// 另有 HasRetainBlock/HasRetainHand：只进面板的下回合账、不参与选计划，Solve 直接读了，不必过这里。
+/// </summary>
+internal sealed record LivePowerSeed
+{
+    /// <summary>余像：每打出一张牌 +N 格挡。</summary>
+    public int BlockPerCard { get; init; }
+    /// <summary>涂毒：未被格挡的攻击伤害附带 N 层中毒。</summary>
+    public int Envenom { get; init; }
+    /// <summary>腐蚀波：每抽一张牌给全体 N 层中毒。</summary>
+    public int PoisonPerDraw { get; init; }
+    /// <summary>群蛇形态：每打出一张牌对残血敌人 N 点伤害。</summary>
+    public int DamagePerCardPlayed { get; init; }
+    /// <summary>速行者：每抽一张牌 N 点伤害。</summary>
+    public int DamagePerDraw { get; init; }
+    /// <summary>刀扇：本回合小刀改打全体。</summary>
+    public bool ShivsHitAll { get; init; }
+    /// <summary>子弹时间：本回合不能再抽牌。</summary>
+    public bool NoDraw { get; init; }
+    /// <summary>爆发：本回合接下来 N 张技能牌额外打出一次。</summary>
+    public int DoubleSkillCount { get; init; }
+    /// <summary>紧勒：层数**在敌人身上**，必须与 <see cref="StrangleTarget"/> 成对才有意义。</summary>
+    public int StrangleAmount { get; init; }
+    /// <summary>紧勒目标 Index（1 起，与 SimEnemy/SimFoe 同一套编号）。</summary>
+    public int StrangleTarget { get; init; }
+    /// <summary>触媒：中毒额外触发 N 次。</summary>
+    public int Accelerant { get; init; }
+    /// <summary>无实体：来袭每段最多只吃 1 点。</summary>
+    public int Intangible { get; init; }
+}
+
 internal sealed class TurnAdvice
 {
     public required TurnPlan Plan { get; init; }
@@ -327,6 +368,11 @@ internal sealed class TurnAdvice
     public required CardEffect ShivTemplate { get; init; }
     /// <summary>刀扇之后的版本（打全体）。</summary>
     public required CardEffect ShivAoeTemplate { get; init; }
+    /// <summary>
+    /// 解算时玩家身上**已在场**的常驻能力。两个引擎都从这儿取 —— **别在各自那边读 live**，
+    /// 那正是"影子播了 7 项、主模型一项没播"这个 bug 的成因（见 <see cref="LivePowerSeed"/>）。
+    /// </summary>
+    public required LivePowerSeed LivePowers { get; init; }
 }
 
 /// <summary>
@@ -423,6 +469,35 @@ internal static class DamageModel
         int passiveHandNextTurn = (ReadPower<InfiniteBladesPower>(me) > 0 ? 1 : 0)
                                 + (ReadPower<ToolsOfTheTradePower>(me) > 0 ? 1 : 0);
 
+        // 开局**已在场**的常驻能力：这里读一次，主模型 initial SearchState 与两个引擎的 TurnAdvice
+        // 都用这一个 live 变量（见 LivePowerSeed 的说明）。紧勒的层数在**敌人**身上，所以顺着敌人找；
+        // Index 用与 SimEnemy/SimFoe 同一套编号（1 起，含已死的位次）。
+        // 已知表达不了：多个敌人同时被紧勒时只取第一个（这个单槽设计沿用搜索里的同一约定）。
+        var live = new LivePowerSeed
+        {
+            BlockPerCard = ReadPower<AfterimagePower>(me),
+            Envenom = ReadPower<EnvenomPower>(me),
+            PoisonPerDraw = ReadPower<CorrosiveWavePower>(me),
+            DamagePerCardPlayed = ReadPower<SerpentFormPower>(me),
+            DamagePerDraw = ReadPower<SpeedsterPower>(me),
+            ShivsHitAll = ReadPower<FanOfKnivesPower>(me) > 0,
+            NoDraw = ReadPower<NoDrawPower>(me) > 0,
+            DoubleSkillCount = ReadPower<BurstPower>(me),
+            Accelerant = playerAccelerant,
+            Intangible = playerIntangible,
+        };
+        for (int i = 0; i < enemiesInOrder.Count; i++)
+        {
+            if (ReadPower<StranglePower>(enemiesInOrder[i]) <= 0)
+                continue;
+            live = live with
+            {
+                StrangleAmount = ReadPower<StranglePower>(enemiesInOrder[i]),
+                StrangleTarget = i + 1,
+            };
+            break;
+        }
+
         // 小刀伤害：优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱/缩小等修正），
         // 都没有小刀时退回手算。必须在 Analyze 之前算出来——刀刃陷阱的伤害 = 张数 × 小刀伤害。
         decimal shivDamage = FindShivDamage(sample, hand, drawPile)
@@ -464,6 +539,19 @@ internal static class DamageModel
             Enemies = enemies.Select(e => e.Clone()).ToList(),
             Intangible = playerIntangible,
             Accelerant = playerAccelerant,
+            // 开局已在场的能力（与 TurnAdvice.LivePowers 同一个 live 变量，不重复读）。
+            // 以前这里只设上面那几项，于是"余像"这类已在场的能力整段丢失 —— 实机三次证明
+            // 主模型因此低估格挡 3 点、高估掉血 3 点（新引擎算 +3、主模型 +0，实机终态 +3）。
+            BlockPerCard = live.BlockPerCard,
+            Envenom = live.Envenom,
+            PoisonPerDraw = live.PoisonPerDraw,
+            DamagePerCardPlayed = live.DamagePerCardPlayed,
+            DamagePerDraw = live.DamagePerDraw,
+            ShivsHitAll = live.ShivsHitAll,
+            NoDraw = live.NoDraw,
+            DoubleSkillCount = live.DoubleSkillCount,
+            StrangleAmount = live.StrangleAmount,
+            StrangleTarget = live.StrangleTarget,
         };
         // "现在就结束回合"那一栏：用同一个算法算空计划下的资源
         int incomingNow = enemies.Where(e => e.Alive && !e.DiesToPoisonWith(playerAccelerant))
@@ -487,6 +575,7 @@ internal static class DamageModel
             NextTurnBaseline = context.Baseline,
             ShivTemplate = context.Shiv,
             ShivAoeTemplate = context.ShivAll,
+            LivePowers = live,
         };
     }
 

@@ -201,23 +201,30 @@ internal sealed class SimState
             PlayerBlock = self.Block,
             PlayerEnergy = pcs?.Energy ?? 0,
             PlayerMaxEnergy = pcs?.MaxEnergy ?? 0,
+            // 这两个只给 CloneProbe 显示，**不参与任何计算**（力量、敏捷都已含在卡面预览值里）
             PlayerStrength = DamageModel.ReadPowerAmount<StrengthPower>(self),
             PlayerDexterity = DamageModel.ReadPowerAmount<DexterityPower>(self),
-            BlockPerCard = DamageModel.ReadPowerAmount<AfterimagePower>(self),
-            ShivBonus = DamageModel.ReadPowerAmount<AccuracyPower>(self),
-            Envenom = DamageModel.ReadPowerAmount<EnvenomPower>(self),
-            PoisonPerDraw = DamageModel.ReadPowerAmount<CorrosiveWavePower>(self),
-            DamagePerCardPlayed = DamageModel.ReadPowerAmount<SerpentFormPower>(self),
-            DamagePerDraw = DamageModel.ReadPowerAmount<SpeedsterPower>(self),
-            // 融入暗影若已被打出（本回合内），捕获时也要带上它的翻倍标记
+            // 开局已在场的能力**一律从 advice 拿** —— 与主模型同一份，别在这儿自己读 live：
+            // 以前两边各读各的（影子读了 7 项、主模型一项都没读），同一个 bug 的两个方向，
+            // 而且两边都以为自己是对的。
+            BlockPerCard = advice.LivePowers.BlockPerCard,
+            Envenom = advice.LivePowers.Envenom,
+            PoisonPerDraw = advice.LivePowers.PoisonPerDraw,
+            DamagePerCardPlayed = advice.LivePowers.DamagePerCardPlayed,
+            DamagePerDraw = advice.LivePowers.DamagePerDraw,
+            ShivsHitAll = advice.LivePowers.ShivsHitAll,
+            NoDraw = advice.LivePowers.NoDraw,
+            DoubleSkillCount = advice.LivePowers.DoubleSkillCount,
+            StrangleAmount = advice.LivePowers.StrangleAmount,
+            StrangleTarget = advice.LivePowers.StrangleTarget,
+            Accelerant = advice.LivePowers.Accelerant,
+            // ShivBonus 故意**不播种**（恒 0）：小刀模板的伤害里已经含了精准。
+            // 代码明证：BuildShivDamage 里 `baseDamage + strength + accuracy`；真实小刀的卡面预览值同理
+            // （与"力量已含在预览值里"是同一类）。播种等于每把刀把精准再算一遍 —— 实测抓到的重复计算。
+            // DoubleBlock / HandFree 这里**暂时**仍从 live 读：它们到底在不在预览值/费用里，
+            // 与既有实机结论（融入暗影 ×2）有冲突，得先分"捕获时已在场"和"计划内打出"两种情形实测再定。
             DoubleBlock = DamageModel.ReadPowerAmount<ShadowmeldPower>(self) > 0,
-            // 子弹时间：游戏侧存的是 NoDrawPower（"本回合不能再抽牌"）；
-            // "手牌免费"没有独立状态 —— 它体现在卡面费用本身变成 0（费用读的是 GetResolved），
-            // 所以这里只要认 NoDraw 就够了，费用不用再特殊处理
-            NoDraw = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
             HandFree = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
-            // 触媒同理（影响结束回合的中毒结算）
-            Accelerant = DamageModel.ReadPowerAmount<AccelerantPower>(self),
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,
             ExhaustCount = pcs?.ExhaustPile.Cards.Count ?? 0,
