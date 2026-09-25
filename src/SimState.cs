@@ -221,9 +221,14 @@ internal sealed class SimState
             // ShivBonus 故意**不播种**（恒 0）：小刀模板的伤害里已经含了精准。
             // 代码明证：BuildShivDamage 里 `baseDamage + strength + accuracy`；真实小刀的卡面预览值同理
             // （与"力量已含在预览值里"是同一类）。播种等于每把刀把精准再算一遍 —— 实测抓到的重复计算。
-            // DoubleBlock / HandFree 这里**暂时**仍从 live 读：它们到底在不在预览值/费用里，
-            // 与既有实机结论（融入暗影 ×2）有冲突，得先分"捕获时已在场"和"计划内打出"两种情形实测再定。
-            DoubleBlock = DamageModel.ReadPowerAmount<ShadowmeldPower>(self) > 0,
+            // DoubleBlock **也不播种**（恒 false）—— 2026-09-25 实机定案：打出融入暗影后按 F5，
+            // 新引擎给「防御 → 格挡 +20」而实机是 10（= 5×2，只翻一次）。说明融入暗影已在场时
+            // **卡面格挡预览已经是翻倍后的 10**，影子再翻一次就成了 ×4。主模型的 +16 与实机一致。
+            // **计划内**打出融入暗影仍然要翻倍（那时卡面是捕获前读的、还没翻），那条路径由
+            // PlayCard 里 `if (card.DoubleBlock) sim.DoubleBlock = true;` 负责 ✓
+            //
+            // HandFree 暂时仍从 live 读：它到底在不在 GetResolved 费用里还没有直接证据
+            // （子弹时间下手上牌的费用本来就是 0，播它是冗余；等有实测再定）。
             HandFree = DamageModel.ReadPowerAmount<NoDrawPower>(self) > 0,
             RoundNumber = state.RoundNumber,
             DiscardCount = pcs?.DiscardPile.Cards.Count ?? 0,

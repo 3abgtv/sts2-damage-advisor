@@ -330,5 +330,23 @@ WeakCase("⑮ 原本就虚弱：不再减（12 不变）", preWeak: 2, wantHpLos
     Check("㉔ 但不触发涂毒（毒仍为 0）", $"{r.Terminal.Foes[0].Poison}", "0");
 }
 
+{
+    // ㉕ 融入暗影**计划内**打出仍要翻倍（那时卡面是捕获前读的，还没翻）
+    SimState s = Make(energy: 3, block: 0, hp: 40, incoming: 20, foeHp: 60);
+    s.Hand.Add(new CardEffect { Name = "融入暗影", Id = "融入暗影", ClassName = "Shadowmeld",
+        Cost = 1, DoubleBlock = true, IsSkill = true, Supported = true });
+    s.Hand.Add(Def("防御", 1, 5));
+    SimSearchResult r = SimSearch.Solve(s, 0);
+    Check("㉕ 计划内融入暗影：防御 5 → 10", $"{r.Plan.Block}", "10");
+}
+{
+    // ㉖ 捕获时卡面**已经翻倍**（融入暗影已在场）→ 绝不能再翻一次。
+    //    实机 2026-09-25 抓到的就是这个：新引擎给 20、实机 10。
+    SimState s = Make(energy: 3, block: 0, hp: 40, incoming: 20, foeHp: 60);
+    s.Hand.Add(Def("防御", 1, 10));   // 预览里已经是 5×2
+    SimSearchResult r = SimSearch.Solve(s, 0);
+    Check("㉖ 已在场的融入暗影：10 不再翻成 20", $"{r.Plan.Block}", "10");
+}
+
 Console.WriteLine(fails == 0 ? "\n全部通过" : $"\n{fails} 项失败");
 return fails == 0 ? 0 : 1;
