@@ -35,6 +35,7 @@ HARDCODED_HITS = {"匕首雨": 2}                      # 描述里写死"造成 
 CARDS_MEANS_SHIVS = {"刀刃之舞", "斗篷与匕首", "袖里乾坤", "墨之刃"}   # Cards= 是"生成小刀数"而不是抽牌数
 CARDS_MEANS_DISCARD = {"隐秘匕首"}                  # Cards= 是弃牌数（日志不记弃牌，该字段跳过校验）
 SKIP_DAMAGE_CHECK = {"刀刃陷阱"}                    # 伤害 = CalculatedShivs × 小刀伤害，卡面没有 Damage 变量可推
+CARDS_IS_NOT_DRAW = {"暗影步"}                      # Cards=3 既不是抽牌也不是小刀（语义是"丢弃所有手牌"），draw 跳过校验
 
 SNAPSHOT_RE = re.compile(
     r"手牌快照#(?P<n>\d+)\s+turn=(?P<turn>\d+)\s+energy=(?P<energy>-?\d+)\s+hand=(?P<hand>\d+)\s+"
@@ -139,7 +140,7 @@ def expected_poison(name: str, vars_: dict[str, tuple[float, float]]) -> float:
 
 
 def expected_draw(name: str, vars_: dict[str, tuple[float, float]]) -> float:
-    if name in CARDS_MEANS_DISCARD or name in CARDS_MEANS_SHIVS:
+    if name in CARDS_MEANS_DISCARD or name in CARDS_MEANS_SHIVS or name in CARDS_IS_NOT_DRAW:
         return 0.0
     cards = preview(vars_, "Cards")
     if cards is not None:

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    影子状态搜索的无头自检台（engine/rewrite）。
+    只用手搭的 SimState 跑 SimSearch，不碰任何游戏对象，所以不需要开游戏。
+    与 mod 构建完全隔离：DamageAdvisor.csproj 是 EnableDefaultCompileItems=false
+    且只收 src\**，这个目录不会被它编进去。
+
+    跑：dotnet run -c Release     （在 tools/selfcheck 下）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>DamageAdvisor</RootNamespace>
+    <AssemblyName>selfcheck</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GameDir Condition="'$(GameDir)' == ''">D:\SteamLibrary\steamapps\common\Slay the Spire 2</GameDir>
+    <ManagedDir>$(GameDir)\data_sts2_windows_x86_64</ManagedDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\src\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Private=true：这些引用要跟 exe 一起复制出去才跑得起来（mod 那边是 false） -->
+    <Reference Include="sts2">
+      <HintPath>$(ManagedDir)\sts2.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(ManagedDir)\GodotSharp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(ManagedDir)\0Harmony.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

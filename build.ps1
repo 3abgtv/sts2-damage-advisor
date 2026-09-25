@@ -35,6 +35,9 @@ $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
 $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
 $hasInject = $ascii.Contains("InjectNextTestCard") -or $ascii.Contains("TestCards")
 $hasDump = $ascii.Contains("DumpSilentPool")
+# 克隆探测与影子状态（engine/rewrite 阶段）同理：只在开发版里，工坊版不许带
+# SimSearch/SimFoe 是第四步（新引擎搜索）新增的，名字一并列上 —— 漏了新类型这校验就形同虚设
+$hasProbe = $ascii.Contains("CloneProbe") -or $ascii.Contains("SimCommands") -or $ascii.Contains("SimState") -or $ascii.Contains("SimSearch") -or $ascii.Contains("SimFoe")
 $wsVersion = "$($manifest.version)-ws"
 $hasWsTag = $utf16.Contains($wsVersion)
 
@@ -42,6 +45,7 @@ if ($Workshop) {
     # 绝不能把带测试功能的 DLL 传到工坊：文件里必须没有注入/转储代码，且带 -ws 版本串
     if ($hasInject) { throw "校验失败：DLL 里仍有 F9 注入代码，拒绝填充 content/" }
     if ($hasDump)   { throw "校验失败：DLL 里仍有卡池转储代码，拒绝填充 content/" }
+    if ($hasProbe)  { throw "校验失败：DLL 里仍有克隆探测代码，拒绝填充 content/" }
     if (-not $hasWsTag) { throw "校验失败：DLL 里找不到版本串 $wsVersion（可能没真正带上 -p:Workshop=true）" }
 
     $content = Join-Path $PSScriptRoot "workshop\content"

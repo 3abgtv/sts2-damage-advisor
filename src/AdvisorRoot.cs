@@ -27,6 +27,10 @@ public partial class AdvisorRoot : CanvasLayer
     private Label? _killLine;
     private Label? _footer;
     private Label? _hintLine;
+#if !WORKSHOP
+    /// <summary>开发版：显示最近一次 F5 预测的"照这个顺序打"。</summary>
+    private Label? _probeLine;
+#endif
 
     private bool _started;
     private bool _loggedReady;
@@ -52,7 +56,7 @@ public partial class AdvisorRoot : CanvasLayer
 #if WORKSHOP
     private const string InjectHint = "";
 #else
-    private const string InjectHint = " · F9 注入";
+    private const string InjectHint = " · F9 注入 · F5 克隆探测";
 #endif
 
     private DateTime _lastCfgWrite;
@@ -157,6 +161,7 @@ public partial class AdvisorRoot : CanvasLayer
         EnsureStarted();        TickToggle();
 #if !WORKSHOP
         TickInject();
+        TickProbe();
 #endif
         TickBudget();
         TickCollapse();
@@ -210,7 +215,13 @@ public partial class AdvisorRoot : CanvasLayer
         _hintLine = MakeLabel($"F6 模式 · F7 掉血上限 · F8 隐藏{InjectHint} · F10 折叠 · 拖动移动", 11, new Color(0.55f, 0.75f, 0.95f));
 
         foreach (Label label in new[] { _header, _status, _enemyLine, _handLines, _planLines, _nextTurnLine, _killLine, _footer, _hintLine })
-            box.AddChild(label);        AddChild(_panel);
+            box.AddChild(label);
+#if !WORKSHOP
+        _probeLine = MakeLabel("", 12, new Color(1f, 0.78f, 0.45f));
+        _probeLine.Visible = false;
+        box.AddChild(_probeLine);
+#endif
+        AddChild(_panel);
         ApplyCollapse();
     }
 
@@ -338,6 +349,24 @@ public partial class AdvisorRoot : CanvasLayer
     }
 
 #if !WORKSHOP
+    private bool _previousProbeKey;
+
+    /// <summary>F5：跑一次"捕获 + 克隆"可行性探测（engine/rewrite 第一阶段），只读真机。</summary>
+    private void TickProbe()
+    {
+        bool pressed = Input.IsKeyPressed(Key.F5);
+        if (pressed && !_previousProbeKey)
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            Player? me = state is null ? null : LocalContext.GetMe(state);
+            if (state is null || me is null)
+                Entry.Log("探测：不在战斗中或找不到自己");
+            else
+                CloneProbe.Run(me, state);
+        }
+        _previousProbeKey = pressed;
+    }
+
     private void TickInject()
     {
         bool pressed = Input.IsKeyPressed(Key.F9);
@@ -346,7 +375,24 @@ public partial class AdvisorRoot : CanvasLayer
         _previousInjectKey = pressed;
     }
 
-    /// <summary>F9：把下一张测试牌直接加入手牌（走游戏自己的 API）。</summary>
+    /// <summary>
+    /// F9 优先补齐的"探测牌"：能力 / 格挡 / 状态 / 攻击 各一张。
+    /// 差分验证要靠这几类牌（能力牌验持续效果、状态牌验上状态、攻击牌验伤害、格挡牌验余像），
+    /// 缺哪类补哪类，省得等抽牌。
+    /// </summary>
+    private static readonly (string ClassName, string Role)[] ProbeKit =
+    {
+        // 播种金标实测（2026-09-25）先给这两张 —— 它们决定影子要不要播种 ShivBonus / DoubleBlock。
+        // 放最前面是为了"进战斗按两下 F9 就能验"，不用等抽牌、也不用按三十次。
+        ("Accuracy", "能力牌·精准（小刀 +4：验小刀预览含不含它）"),
+        ("Shadowmeld", "技能牌·融入暗影（格挡翻倍：验格挡预览含不含）"),
+        ("Afterimage", "能力牌·余像（每打出一张牌 +1 格挡）"),
+        ("DefendSilent", "格挡牌·防御"),
+        ("DeadlyPoison", "状态牌·致命毒药（上毒）"),
+        ("StrikeSilent", "攻击牌·打击"),
+    };
+
+    /// <summary>F9：先补齐探测需要的牌，都齐了再按 TestCards 循环注入。</summary>
     private void InjectNextTestCard()
     {
         try
@@ -371,18 +417,39 @@ public partial class AdvisorRoot : CanvasLayer
                 return;
             }
 
+            // ① 先补齐"探测需要的牌"：能力 / 格挡 / 状态 / 攻击 各一张，缺哪类补哪类
+            //    （这样不用等抽到牌就能跑 F5 的差分验证；一次补一张，连按 F9 即可）
+            IReadOnlyList<CardModel> hand = me.PlayerCombatState?.Hand.Cards ?? Array.Empty<CardModel>();
+            foreach ((string want, string role) in ProbeKit)
+            {
+                bool alreadyHave = false;
+                foreach (CardModel c in hand)
+                {
+                    if (c.GetType().Name == want)
+                    {
+                        alreadyHave = true;
+                        break;
+                    }
+                }
+                if (alreadyHave)
+                    continue;
+
+                CardModel? kitModel = FindCardModel(want);
+                if (kitModel is null)
+                {
+                    Entry.Log($"补齐失败：卡池里没有 {want}（跳过，走循环注入）");
+                    break;
+                }
+                Entry.Log($"F9 补齐探测牌：{role}（手里没有这一类）");
+                InjectAsync(state, me, state.CreateCard(kitModel, me), want);
+                return;
+            }
+
+            // ② 探测牌齐了 → 按 TestCards 循环注入
             string className = TestCards[_injectIndex % TestCards.Length];
             _injectIndex++;
 
-            CardModel? model = null;
-            foreach (CardModel candidate in ModelDb.AllCards)
-            {
-                if (candidate.GetType().Name == className)
-                {
-                    model = candidate;
-                    break;
-                }
-            }
+            CardModel? model = FindCardModel(className);
             if (model is null)
             {
                 Entry.Log($"注入失败：卡池里没有 {className}");
@@ -396,6 +463,16 @@ public partial class AdvisorRoot : CanvasLayer
         {
             Entry.Log("注入异常：" + ex);
         }
+    }
+
+    private static CardModel? FindCardModel(string className)
+    {
+        foreach (CardModel candidate in ModelDb.AllCards)
+        {
+            if (candidate.GetType().Name == className)
+                return candidate;
+        }
+        return null;
     }
 
     /// <summary>异步注入：手牌满时先弃掉最后一张（手牌上限 10）。</summary>
@@ -463,7 +540,7 @@ public partial class AdvisorRoot : CanvasLayer
         Player? me = LocalContext.GetMe(state);
         PlayerCombatState? pcs = me?.PlayerCombatState;
         Creature? myCreature = me?.Creature;
-        if (pcs is null || myCreature is null)
+        if (me is null || pcs is null || myCreature is null)
         {
             SetSimple("读取不到自己的战斗状态");
             return;
@@ -475,6 +552,21 @@ public partial class AdvisorRoot : CanvasLayer
             SetSimple("没有存活的敌人");
             return;
         }
+
+#if !WORKSHOP
+        // 差分验证：面板每次刷新都用实机状态核对上一次预测 ——
+        // 这样"照预测打完之后"的那一刻必然被抓到，不需要玩家掐时机按 F5。
+        CloneProbe.CheckPendingLive(me, state);
+
+        // 顺序提示也在这里刷新：它要在签名比对之前更新，否则按 F5 后（签名没变）面板不会重画
+        if (_probeLine is not null)
+        {
+            string seq = CloneProbe.LastSequence;
+            string compare = CloneProbe.ComparePlanText;
+            _probeLine.Visible = !AdvisorSettings.Collapsed && (seq.Length > 0 || compare.Length > 0);
+            _probeLine.Text = seq + (seq.Length > 0 && compare.Length > 0 ? "\n" : "") + compare;
+        }
+#endif
 
         if (pcs.Phase != PlayerTurnPhase.Play)
         {
@@ -504,6 +596,11 @@ public partial class AdvisorRoot : CanvasLayer
 
         TurnPlan plan = advice.Plan;
 
+#if !WORKSHOP
+        // 第三步第一刀：把主模型的推荐计划喂给新引擎重放，两边数字并排显示（差异即 bug）
+        CloneProbe.ComparePlan(me, state, advice);
+#endif
+
         string handKey = string.Join(",", hand.Select(SafeId));
         if (handKey != _lastLoggedHand && _handDumpCount < 25)
         {
@@ -516,6 +613,28 @@ public partial class AdvisorRoot : CanvasLayer
             Entry.Log($"手牌快照#{_handDumpCount} turn={pcs.TurnNumber} energy={pcs.Energy} hand={hand.Count} draw={pcs.DrawPile.Cards.Count} enemies={enemies.Count} hp={myCreature.CurrentHp} block={myCreature.Block} incoming={advice.IncomingDamage} nodes={advice.NodesExplored}");
             foreach (CardEffect e in advice.HandEffects)
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
+
+            // 诊断（2026-09-25 实机发现的疑点）：抽牌堆里的牌，游戏大概**不刷新**它的 PreviewValue
+            // （只刷要给玩家看的手牌），于是"等抽到"的牌在计划里用的是基础值 —— 有格挡/伤害修正时
+            // 数字会偏高。实证据：同一回合 手牌防御 `vars=[Block=5/3.8]`（刷过），而计划里从抽牌堆
+            // 抽到的后空翻被按 5 算，实机只给 3。
+            //
+            // 判据：手上只要有一张牌的 PreviewValue ≠ BaseValue（说明修正生效、手牌被刷过），
+            // 就把抽牌堆的 vars 一并打出来对照 —— 危害在于**抽牌堆那张会是 Base/Base**。
+            // 无修正时不打，免得每次快照多十几行。
+            // 前缀用「抽牌堆」而不是「牌」：tools/verify-log.py 按 `牌 <名字> cost=` 认手牌行，
+            // 换了前缀它就不会把这十几行当成手牌去校验（否则 hand= 计数会乱）。
+            try
+            {
+                bool anyModifier = hand.Any(c => c.DynamicVars.Any(v => v.Value.BaseValue != v.Value.PreviewValue));
+                if (anyModifier)
+                    foreach (CardEffect e in advice.DrawEffects)
+                        Entry.Log($"  抽牌堆 {e.Name} cost={e.Cost} dmg={e.Damage} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} vars=[{DamageModel.DescribeVars(e.Source!)}]");
+            }
+            catch (Exception ex)
+            {
+                Entry.Log("抽牌堆诊断输出失败：" + ex.Message);
+            }
             foreach (SimEnemy se in advice.EnemiesBefore)
             {
                 // ⚠️ 按屏幕编号取怪，不能按名字：同名怪（史莱姆群等）会取错，取不到还会把 null 传下去
@@ -527,7 +646,7 @@ public partial class AdvisorRoot : CanvasLayer
                 Entry.Log($"  敌 {se.Index}.{se.Name} hp={se.Hp} blk={se.Block} incoming={se.IncomingWith(advice.PlayerIntangible)} | {intent}"
                           + $" | 按我算={byMe} 按全队算={byTeam} | buff[{buffs}]");
             }
-            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}->{a.TargetIndex}号" : a.Card.Name))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
+            Entry.Log($"  计划 {string.Join(" -> ", plan.Actions.Select(a => DamageModel.DescribeAction(a, true)))} 伤害={plan.Damage} 格挡+={plan.Block} 掉血={plan.HpLoss} 致命={plan.Lethal} 耗能={plan.EnergySpent} 回能={plan.EnergyGained}");
             Entry.Log($"  下回合 现在结束=[{advice.NextTurnBaseline}] 照推荐打=[{plan.NextTurn}]");
         }
 
@@ -583,7 +702,7 @@ public partial class AdvisorRoot : CanvasLayer
             }
             else
             {
-                string order = string.Join(" → ", plan.Actions.Select(a => a.TargetIndex > 0 ? $"{a.Card.Name}[{a.TargetIndex}号]" : a.Card.Name));
+                string order = string.Join(" → ", plan.Actions.Select(a => DamageModel.DescribeAction(a, false)));
                 int energyLeft = pcs.Energy + plan.EnergyGained - plan.EnergySpent;
                 string hurt = plan.HpLoss == 0 ? "预计无伤" : $"预计掉血 {plan.HpLoss}";
                 int weakApplied = plan.Actions.Sum(a => a.Card.Weak);

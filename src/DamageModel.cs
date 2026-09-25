@@ -269,6 +269,16 @@ internal sealed class PlannedAction
 {
     public required CardEffect Card { get; init; }
     public required int TargetIndex { get; init; }
+    /// <summary>
+    /// 打出这张牌时要**主动选择**弃掉哪些牌（杂技/生存者这类）。弃整手那种没得选的、
+    /// 以及弃牌堆本身的记账都不进来 —— 这个字段的唯一用途是告诉玩家"弃哪张"，
+    /// 玩家没得选的情况写进去只是噪音。
+    ///
+    /// 是可变的 List 而不是 init 集合：弃牌发生在"打出这张牌"的**同一次**结算里，
+    /// 那一步才刚 new 出这个 PlannedAction（见 ApplyCard），所以就地追加不会波及
+    /// 兄弟分支或被 Consider 抄进 TurnPlan 的旧动作。
+    /// </summary>
+    public List<CardEffect> Discards { get; init; } = new();
 }
 
 internal sealed class TurnPlan
@@ -291,6 +301,47 @@ internal sealed class TurnPlan
     public NextTurnResources NextTurn { get; set; }
 }
 
+/// <summary>
+/// 解算那一刻**已经在场**的常驻能力 —— 一处读取、两个引擎共用。
+///
+/// 为什么要有这个对象：以前主模型和影子**各自读 live 能力**（影子读了 7 项、主模型一项都没读），
+/// 同一个 bug 的两个方向，两边还都以为自己是对的。收成值对象后两个引擎读同一份，
+/// 以后加字段也不可能只加一边。附带好处：tools/selfcheck 能直接构造它做测试，不用造 Player。
+///
+/// **只装"不在卡面预览值里"的能力。** 下面这些都已经体现在预览值里，播进来就是**重复计算**，
+/// 所以故意不在这里：Dex（卡面格挡已含敏捷）· ShivBonus（小刀模板已含精准）·
+/// DoubleBlock（融入暗影已进格挡预览）· FirstShivBonus（幻影之刃已进小刀预览）·
+/// HandFree / NextSkillFree（费用已走 GetResolved）· DiscardedThisTurn（铭记死亡惰性重算）。
+/// 另有 HasRetainBlock/HasRetainHand：只进面板的下回合账、不参与选计划，Solve 直接读了，不必过这里。
+/// </summary>
+internal sealed record LivePowerSeed
+{
+    /// <summary>余像：每打出一张牌 +N 格挡。</summary>
+    public int BlockPerCard { get; init; }
+    /// <summary>涂毒：未被格挡的攻击伤害附带 N 层中毒。</summary>
+    public int Envenom { get; init; }
+    /// <summary>腐蚀波：每抽一张牌给全体 N 层中毒。</summary>
+    public int PoisonPerDraw { get; init; }
+    /// <summary>群蛇形态：每打出一张牌对残血敌人 N 点伤害。</summary>
+    public int DamagePerCardPlayed { get; init; }
+    /// <summary>速行者：每抽一张牌 N 点伤害。</summary>
+    public int DamagePerDraw { get; init; }
+    /// <summary>刀扇：本回合小刀改打全体。</summary>
+    public bool ShivsHitAll { get; init; }
+    /// <summary>子弹时间：本回合不能再抽牌。</summary>
+    public bool NoDraw { get; init; }
+    /// <summary>爆发：本回合接下来 N 张技能牌额外打出一次。</summary>
+    public int DoubleSkillCount { get; init; }
+    /// <summary>紧勒：层数**在敌人身上**，必须与 <see cref="StrangleTarget"/> 成对才有意义。</summary>
+    public int StrangleAmount { get; init; }
+    /// <summary>紧勒目标 Index（1 起，与 SimEnemy/SimFoe 同一套编号）。</summary>
+    public int StrangleTarget { get; init; }
+    /// <summary>触媒：中毒额外触发 N 次。</summary>
+    public int Accelerant { get; init; }
+    /// <summary>无实体：来袭每段最多只吃 1 点。</summary>
+    public int Intangible { get; init; }
+}
+
 internal sealed class TurnAdvice
 {
     public required TurnPlan Plan { get; init; }
@@ -300,12 +351,28 @@ internal sealed class TurnAdvice
     public required int CurrentHp { get; init; }
     public required int NodesExplored { get; init; }
     public required IReadOnlyList<CardEffect> HandEffects { get; init; }
+    /// <summary>抽牌堆的解析结果（按抽牌顺序）。engine/rewrite 的影子状态要用它模拟抽牌。</summary>
+    public required IReadOnlyList<CardEffect> DrawEffects { get; init; }
     /// <summary>解算时玩家身上已有的无实体层数（面板显示"来袭"时要按它折算）。</summary>
     public required int PlayerIntangible { get; init; }
     /// <summary>解算时玩家身上的触媒层数（面板判断"中毒先手击杀"时要按它折算）。</summary>
     public required int PlayerAccelerant { get; init; }
     /// <summary>什么都不打（现在就结束回合）时，下回合能确定的资源。</summary>
     public required NextTurnResources NextTurnBaseline { get; init; }
+    /// <summary>
+    /// 生成小刀用的模板。影子状态以前是"扫手牌/抽牌堆里有没有真小刀"，扫不到就留空——
+    /// 2026-09-20 实机证实了后果：手里只有刀刃之舞、没有真小刀时，影子生成 **0 张**小刀，
+    /// 于是认为刀刃之舞一文不值、永远不选它，而且**一声不响**（差分看不见"它避开的那个
+    /// 计划其实更好"）。改由这里下发：两个引擎用**同一把**小刀，差分才比的是别的东西。
+    /// </summary>
+    public required CardEffect ShivTemplate { get; init; }
+    /// <summary>刀扇之后的版本（打全体）。</summary>
+    public required CardEffect ShivAoeTemplate { get; init; }
+    /// <summary>
+    /// 解算时玩家身上**已在场**的常驻能力。两个引擎都从这儿取 —— **别在各自那边读 live**，
+    /// 那正是"影子播了 7 项、主模型一项没播"这个 bug 的成因（见 <see cref="LivePowerSeed"/>）。
+    /// </summary>
+    public required LivePowerSeed LivePowers { get; init; }
 }
 
 /// <summary>
@@ -317,6 +384,29 @@ internal static class DamageModel
     // 记忆化后 Nodes 计的是"唯一状态数"（重复状态提前返回），所以上限可以低很多：
 // 既覆盖足够的搜索空间，又避免主线程卡帧。
     private const int MaxNodes = 25000;
+
+    /// <summary>
+    /// 打分口径的唯一实现在 SearchContext 里（它是搜索的一部分，所以留在那儿）。
+    /// 新引擎（SimSearch）走这个转发共用同一份 —— 打分顺序是**两个引擎必须一致的规格**，
+    /// 各写一份等于在差分里多塞一个变量，把真正的规则差异淹掉。
+    /// </summary>
+    internal static bool IsBetter(TurnPlan candidate, TurnPlan current)
+        => SearchContext.IsBetter(candidate, current);
+
+    /// <summary>
+    /// 计划里"打这张牌、目标是谁、要不要弃牌"的**唯一**渲染 —— 面板、快照日志、F5 三处共用。
+    /// 各写一份必然漂移：弃牌提示是后加的，漏掉任何一处就等于那个界面没提示。
+    /// arrow=true 是快照日志的 `打击->1号` 写法，false 是面板/F5 的 `打击[1号]` 写法。
+    /// </summary>
+    internal static string DescribeAction(PlannedAction action, bool arrow)
+    {
+        string head = action.TargetIndex > 0
+            ? (arrow ? $"{action.Card.Name}->{action.TargetIndex}号" : $"{action.Card.Name}[{action.TargetIndex}号]")
+            : action.Card.Name;
+        if (action.Discards.Count == 0)
+            return head;
+        return head + "（弃 " + string.Join("、", action.Discards.Select(d => d.Name)) + "）";
+    }
 
     public static TurnAdvice Solve(
         IReadOnlyList<CardModel> hand,
@@ -379,6 +469,35 @@ internal static class DamageModel
         int passiveHandNextTurn = (ReadPower<InfiniteBladesPower>(me) > 0 ? 1 : 0)
                                 + (ReadPower<ToolsOfTheTradePower>(me) > 0 ? 1 : 0);
 
+        // 开局**已在场**的常驻能力：这里读一次，主模型 initial SearchState 与两个引擎的 TurnAdvice
+        // 都用这一个 live 变量（见 LivePowerSeed 的说明）。紧勒的层数在**敌人**身上，所以顺着敌人找；
+        // Index 用与 SimEnemy/SimFoe 同一套编号（1 起，含已死的位次）。
+        // 已知表达不了：多个敌人同时被紧勒时只取第一个（这个单槽设计沿用搜索里的同一约定）。
+        var live = new LivePowerSeed
+        {
+            BlockPerCard = ReadPower<AfterimagePower>(me),
+            Envenom = ReadPower<EnvenomPower>(me),
+            PoisonPerDraw = ReadPower<CorrosiveWavePower>(me),
+            DamagePerCardPlayed = ReadPower<SerpentFormPower>(me),
+            DamagePerDraw = ReadPower<SpeedsterPower>(me),
+            ShivsHitAll = ReadPower<FanOfKnivesPower>(me) > 0,
+            NoDraw = ReadPower<NoDrawPower>(me) > 0,
+            DoubleSkillCount = ReadPower<BurstPower>(me),
+            Accelerant = playerAccelerant,
+            Intangible = playerIntangible,
+        };
+        for (int i = 0; i < enemiesInOrder.Count; i++)
+        {
+            if (ReadPower<StranglePower>(enemiesInOrder[i]) <= 0)
+                continue;
+            live = live with
+            {
+                StrangleAmount = ReadPower<StranglePower>(enemiesInOrder[i]),
+                StrangleTarget = i + 1,
+            };
+            break;
+        }
+
         // 小刀伤害：优先取"场上真实小刀的游戏预览值"（含力量/精准/虚弱/缩小等修正），
         // 都没有小刀时退回手算。必须在 Analyze 之前算出来——刀刃陷阱的伤害 = 张数 × 小刀伤害。
         decimal shivDamage = FindShivDamage(sample, hand, drawPile)
@@ -420,6 +539,19 @@ internal static class DamageModel
             Enemies = enemies.Select(e => e.Clone()).ToList(),
             Intangible = playerIntangible,
             Accelerant = playerAccelerant,
+            // 开局已在场的能力（与 TurnAdvice.LivePowers 同一个 live 变量，不重复读）。
+            // 以前这里只设上面那几项，于是"余像"这类已在场的能力整段丢失 —— 实机三次证明
+            // 主模型因此低估格挡 3 点、高估掉血 3 点（新引擎算 +3、主模型 +0，实机终态 +3）。
+            BlockPerCard = live.BlockPerCard,
+            Envenom = live.Envenom,
+            PoisonPerDraw = live.PoisonPerDraw,
+            DamagePerCardPlayed = live.DamagePerCardPlayed,
+            DamagePerDraw = live.DamagePerDraw,
+            ShivsHitAll = live.ShivsHitAll,
+            NoDraw = live.NoDraw,
+            DoubleSkillCount = live.DoubleSkillCount,
+            StrangleAmount = live.StrangleAmount,
+            StrangleTarget = live.StrangleTarget,
         };
         // "现在就结束回合"那一栏：用同一个算法算空计划下的资源
         int incomingNow = enemies.Where(e => e.Alive && !e.DiesToPoisonWith(playerAccelerant))
@@ -437,9 +569,13 @@ internal static class DamageModel
             CurrentHp = currentHp,
             NodesExplored = context.Nodes,
             HandEffects = handEffects,
+            DrawEffects = drawEffects,
             PlayerIntangible = playerIntangible,
             PlayerAccelerant = playerAccelerant,
             NextTurnBaseline = context.Baseline,
+            ShivTemplate = context.Shiv,
+            ShivAoeTemplate = context.ShivAll,
+            LivePowers = live,
         };
     }
 
@@ -681,7 +817,14 @@ internal static class DamageModel
                 Intangible = state.Intangible + card.GrantsIntangible * times,
                 Accelerant = state.Accelerant + card.GrantsAccelerant * times,
                 // 紧勒：以最后打出的一张为准（同一回合叠加两次没有意义，取大的那个更安全）
-                StrangleAmount = card.Strangle * times > state.StrangleAmount ? card.Strangle * times : state.StrangleAmount,
+                // 紧勒：游戏里是**敌人身上**的 Counter 型能力 —— 官方对 PowerStackType.Counter 的定义是
+                // "Amount is visible, and must be manually incremented/decremented"，StranglePower 的文档
+                // 也明说它要处理 "especially when stacking"。所以是**相加**，不是取 max（以前写成 max，
+                // 两次紧勒只算 2）。同一目标累加；换了目标只能从新目标自己的 0 起算
+                // —— 单槽模型的已知限制：换目标后旧目标的紧勒不再跟踪，见 STATUS。
+                StrangleAmount = card.Strangle > 0
+                    ? (targetIndex == state.StrangleTarget ? state.StrangleAmount : 0) + card.Strangle * times
+                    : state.StrangleAmount,
                 StrangleTarget = card.Strangle > 0 ? targetIndex : state.StrangleTarget,
                 // 猛扑：打出后置位；打出一张技能牌就消耗掉；其它牌不影响
                 NextSkillFree = card.MakesNextSkillFree || (state.NextSkillFree && !card.IsSkill),
@@ -912,17 +1055,8 @@ internal static class DamageModel
                 // 暗影步：弃整手且不补充
             }
 
-            // 普通弃牌（含被弃触发）；爆发翻倍时弃两次
-            for (int d = 0; d < played.Discard * times && next.Hand.Count > 0; d++)
-            {
-                int pick = ChooseDiscard(next.Hand);
-                CardEffect discarded = next.Hand[pick];
-                next.Hand.RemoveAt(pick);
-                next.DiscardedThisTurn++;
-                ApplyDiscardTrigger(next, discarded);
-            }
-
             // 抽牌（子弹时间后本回合不能再抽）；爆发翻倍时抽两次
+            // ⚠️ 必须在普通弃牌之前，理由见下面那段
             List<CardEffect> drawn = (!next.NoDraw && played.Draw > 0)
                 ? HandleDraws(next, played.Draw * times)
                 : new List<CardEffect>();
@@ -931,6 +1065,23 @@ internal static class DamageModel
             if (played.BlockIfSkillDrawn > 0 && drawn.Any(c => c.IsSkill))
                 next.Block += (played.BlockIfSkillDrawn + state.Dex)
                               * (state.DoubleBlock || played.DoubleBlock ? 2 : 1);
+
+            // 普通弃牌（含被弃触发）；爆发翻倍时弃两次
+            // 位置在**抽牌之后**：杂技/投掷匕首 的文本是"抽 N 张，然后弃 1 张"，弃的可以是刚抽上来
+            // 那张。以前两个引擎都写成"先弃后抽"——而且错得一模一样，所以差分对这件事完全没有
+            // 分辨力（2026-09-20 才发现）。改这里时两个引擎必须一起改，否则会凭空多出一类差异。
+            for (int d = 0; d < played.Discard * times && next.Hand.Count > 0; d++)
+            {
+                int pick = ChooseDiscard(next.Hand);
+                CardEffect discarded = next.Hand[pick];
+                next.Hand.RemoveAt(pick);
+                next.DiscardedThisTurn++;
+                // 记到"打出这张牌"那一步上，面板才能告诉你弃哪张 —— 弃牌由模型挑，
+                // 玩家只看到"打杂技"是不知道怎么打的
+                if (next.Actions.Count > 0)
+                    next.Actions[^1].Discards.Add(discarded);
+                ApplyDiscardTrigger(next, discarded);
+            }
 
             // 生成小刀
             for (int s = 0; s < played.Shivs * times; s++)
@@ -1272,8 +1423,11 @@ internal static class DamageModel
         /// 两种优先级模式（F6 切换）：
         ///   保命优先：不死 → 掉血 ≤ 预算（超预算则少掉血优先）→ 优先击杀 → 最大伤害
         ///   输出优先：不死 → 优先击杀 → 最大伤害 → 掉血最少
+        ///
+        /// internal 是为了让外层 DamageModel.IsBetter 转发出去（嵌套类型的 private 外层够不着）。
+        /// 有效可见性仍受外层 SearchContext 的 private 限制，不会真的漏到外面。
         /// </summary>
-        private static bool IsBetter(TurnPlan candidate, TurnPlan current)
+        internal static bool IsBetter(TurnPlan candidate, TurnPlan current)
         {
             if (candidate.Lethal != current.Lethal)
                 return !candidate.Lethal;
@@ -1859,6 +2013,9 @@ internal static class DamageModel
             return 0m;
         }
     }
+
+    /// <summary>读某个 Power 的层数（联机时队友施加的也读得到）。engine/rewrite 捕获影子状态时用。</summary>
+    public static int ReadPowerAmount<T>(Creature creature) where T : PowerModel => ReadPower<T>(creature);
 
     private static int ReadPower<T>(Creature creature) where T : PowerModel
     {
