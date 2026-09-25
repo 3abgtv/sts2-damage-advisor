@@ -77,6 +77,9 @@ public partial class AdvisorRoot : CanvasLayer
         "Tracking", "WraithForm", "Strangle", "Pounce", "BubbleBubble", "EchoingSlash",
         // 覆盖率补齐（刀刃陷阱/爆发/手上技法/触媒）与费用修正（精密瞄准）
         "KnifeTrap", "Burst", "HandTrick", "Accelerant", "Pinpoint",
+        // 播种金标实测用（2026-09-25）：精准 → 小刀伤害里含不含它；融入暗影 → 格挡预览含不含翻倍。
+        // 这两条决定影子要不要播种 ShivBonus / DoubleBlock（现在都没播，得先验）
+        "Accuracy", "Shadowmeld",
     };
 #endif
     private string _signature = "";
