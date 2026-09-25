@@ -327,19 +327,32 @@ internal static class CloneProbe
         return skipped;
     }
 
-    /// <summary>终态指纹（影子）：回合 + 每只存活敌人（名字/血/中毒/易伤/虚弱）+ 我的（能量/格挡）。</summary>
+    /// <summary>
+    /// 终态指纹（影子）：回合 + 每只存活敌人（名字/血/中毒/易伤/虚弱）+ 我的（能量/格挡）。
+    /// ⚠️ 敌人全灭时写「全灭」而不是留空：留空得到的 `r5||m:1/0` 根本看不出它是
+    /// "**预测全灭**"还是"没读到敌人"，而这恰恰是玩家最需要一眼看懂的那种预测
+    /// （2026-09-25 实机踩到）。实机那边用同一个词，才能继续逐字比对。
+    /// </summary>
     private static string BuildSignature(SimState sim)
-        => "r" + sim.RoundNumber + "|"
-         + string.Join(",", sim.Foes.Where(f => f.Alive).Select(f => $"{f.Name}:{f.Hp}/{f.Poison}/{f.Vulnerable}/{f.Weak}"))
-         + "|m:" + sim.PlayerEnergy + "/" + sim.PlayerBlock;
+    {
+        string foes = string.Join(",", sim.Foes.Where(f => f.Alive)
+            .Select(f => $"{f.Name}:{f.Hp}/{f.Poison}/{f.Vulnerable}/{f.Weak}"));
+        return "r" + sim.RoundNumber + "|" + (foes.Length == 0 ? AllDead : foes)
+             + "|m:" + sim.PlayerEnergy + "/" + sim.PlayerBlock;
+    }
 
     /// <summary>终态指纹（实机）—— 与影子版同一个格式，才能直接比对。</summary>
     private static string BuildSignature(Player me, CombatState state)
-        => "r" + state.RoundNumber + "|"
-         + string.Join(",", state.Enemies.Where(e => e.IsAlive).Select(e =>
-             $"{e.Name}:{e.CurrentHp}/" + DamageModel.ReadPowerAmount<PoisonPower>(e) + "/"
-             + DamageModel.ReadPowerAmount<VulnerablePower>(e) + "/" + DamageModel.ReadPowerAmount<WeakPower>(e)))
-         + "|m:" + (me.PlayerCombatState?.Energy ?? 0) + "/" + me.Creature.Block;
+    {
+        string foes = string.Join(",", state.Enemies.Where(e => e.IsAlive).Select(e =>
+            $"{e.Name}:{e.CurrentHp}/" + DamageModel.ReadPowerAmount<PoisonPower>(e) + "/"
+            + DamageModel.ReadPowerAmount<VulnerablePower>(e) + "/" + DamageModel.ReadPowerAmount<WeakPower>(e)));
+        return "r" + state.RoundNumber + "|" + (foes.Length == 0 ? AllDead : foes)
+             + "|m:" + (me.PlayerCombatState?.Energy ?? 0) + "/" + me.Creature.Block;
+    }
+
+    /// <summary>敌人全灭时指纹里写这个 —— 两个重载必须用同一个词，否则比不出来。</summary>
+    private const string AllDead = "全灭";
 
     /// <summary>
     /// 用**当前实机状态**核对上一次预测（整套推荐计划的终态）。面板每次刷新都会调用 ——
