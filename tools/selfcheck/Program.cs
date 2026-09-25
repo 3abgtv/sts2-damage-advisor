@@ -306,5 +306,29 @@ WeakCase("⑮ 原本就虚弱：不再减（12 不变）", preWeak: 2, wantHpLos
     Check("㉒ 打完层数 4（不是 max 的 2）", $"{r.Terminal.StrangleAmount}", "4");
 }
 
+{
+    // ㉓ 涂毒按**段数**叠（主模型 ApplyEnvenom 用的是 state.Envenom * Math.Max(1, hits)）。
+    //    以前影子按"张"算 —— 多段攻击少叠毒。
+    SimState s = Make(energy: 3, block: 0, hp: 40, incoming: 0, foeHp: 99,
+        seed: new LivePowerSeed { Envenom = 3 });
+    s.Hand.Add(new CardEffect { Name = "多段", Id = "多段", ClassName = "Multi",
+        Cost = 1, Damage = 6, Hits = 2, IsAttack = true, Supported = true });
+    SimSearchResult r = SimSearch.Solve(s, 0);
+    Check("㉓ 涂毒按段数：2 段 × 3 = 6", $"{r.Terminal.Foes[0].Poison}", "6");
+}
+{
+    // ㉔ 速行者的被动伤害**不触发**涂毒（涂毒只认攻击造成的伤害）。
+    //    以前影子在这条路径上多触发了一次 —— 与主模型不一致的假差异来源。
+    SimState s = Make(energy: 3, block: 0, hp: 40, incoming: 0, foeHp: 99,
+        seed: new LivePowerSeed { DamagePerDraw = 5, Envenom = 3 });
+    // 手牌放"抽1张"的牌，抽牌堆里要有牌 —— 速行者才会在抽到牌时触发
+    s.Hand.Add(new CardEffect { Name = "抽牌", Id = "抽牌", ClassName = "Draw1",
+        Cost = 1, Draw = 1, IsSkill = true, Supported = true });
+    s.Draw.Enqueue(Def("垃圾", 0, 0));
+    SimSearchResult r = SimSearch.Solve(s, 0);
+    Check("㉔ 速行者伤害照样算（5 伤）", $"{r.Plan.Damage}", "5");
+    Check("㉔ 但不触发涂毒（毒仍为 0）", $"{r.Terminal.Foes[0].Poison}", "0");
+}
+
 Console.WriteLine(fails == 0 ? "\n全部通过" : $"\n{fails} 项失败");
 return fails == 0 ? 0 : 1;

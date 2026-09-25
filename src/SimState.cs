@@ -376,8 +376,9 @@ internal static class SimCommands
                     DealDamage(foe, sim.DamagePerDraw);
                     if (foe.Hp != before)
                         parts.Add($"速行者 → {foe.Index}号 {before - foe.Hp} 伤");
-                    if (sim.Envenom > 0 && foe.Hp < before)
-                        ApplyPoison(foe, sim.Envenom);
+                    // 这里**不触发涂毒**：涂毒只认"攻击造成的伤害"，速行者是能力被动伤害，
+                    // 不是一次攻击。主模型同理（被动伤害走 ApplyDamage，不经过 ApplyDamageToAll）。
+                    // 以前影子在这儿多触发了一次，是两处涂毒偏差之一。
                 }
                 if (sim.PoisonPerDraw > 0)
                     foe.Poison += sim.PoisonPerDraw;
@@ -470,6 +471,7 @@ internal static class SimCommands
         baseDamage *= times;
 
         // ② 伤害（先扣格挡再扣血；只对本回合新上的易伤 ×1.5）+ 涂毒
+        //    涂毒按**段数**叠（"每有一次攻击"→ 匕首雨 2 段算 2 次），与主模型 ApplyEnvenom 同式
         if (baseDamage > 0)
         {
             foreach (SimFoe foe in targets)
@@ -477,7 +479,7 @@ internal static class SimCommands
                 int hpBefore = foe.Hp;
                 parts.Add($"{foe.Index}号 {DealDamage(foe, baseDamage * (foe.VulnerableNew ? 1.5m : 1m))}");
                 if (sim.Envenom > 0 && foe.Hp < hpBefore)
-                    parts.Add($"涂毒 → {ApplyPoison(foe, sim.Envenom)}");
+                    parts.Add($"涂毒 → {ApplyPoison(foe, sim.Envenom * Math.Max(1, card.Hits))}");
             }
         }
 
@@ -672,7 +674,7 @@ internal static class SimCommands
                 int hpBefore = foe.Hp;
                 sub.Add(DealDamage(foe, discarded.Damage * (foe.VulnerableNew ? 1.5m : 1m)));
                 if (sim.Envenom > 0 && foe.Hp < hpBefore)
-                    sub.Add(ApplyPoison(foe, sim.Envenom));
+                    sub.Add(ApplyPoison(foe, sim.Envenom * Math.Max(1, discarded.Hits)));
             }
         }
         if (discarded.Block > 0)
