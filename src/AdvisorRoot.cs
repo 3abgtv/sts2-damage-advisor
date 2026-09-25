@@ -613,6 +613,28 @@ public partial class AdvisorRoot : CanvasLayer
             Entry.Log($"手牌快照#{_handDumpCount} turn={pcs.TurnNumber} energy={pcs.Energy} hand={hand.Count} draw={pcs.DrawPile.Cards.Count} enemies={enemies.Count} hp={myCreature.CurrentHp} block={myCreature.Block} incoming={advice.IncomingDamage} nodes={advice.NodesExplored}");
             foreach (CardEffect e in advice.HandEffects)
                 Entry.Log($"  牌 {e.Name} cost={e.Cost} dmg={e.Damage} all={e.HitsAll} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} ok={e.Supported} note={e.Note} vars=[{DamageModel.DescribeVars(e.Source!)}]");
+
+            // 诊断（2026-09-25 实机发现的疑点）：抽牌堆里的牌，游戏大概**不刷新**它的 PreviewValue
+            // （只刷要给玩家看的手牌），于是"等抽到"的牌在计划里用的是基础值 —— 有格挡/伤害修正时
+            // 数字会偏高。实证据：同一回合 手牌防御 `vars=[Block=5/3.8]`（刷过），而计划里从抽牌堆
+            // 抽到的后空翻被按 5 算，实机只给 3。
+            //
+            // 判据：手上只要有一张牌的 PreviewValue ≠ BaseValue（说明修正生效、手牌被刷过），
+            // 就把抽牌堆的 vars 一并打出来对照 —— 危害在于**抽牌堆那张会是 Base/Base**。
+            // 无修正时不打，免得每次快照多十几行。
+            // 前缀用「抽牌堆」而不是「牌」：tools/verify-log.py 按 `牌 <名字> cost=` 认手牌行，
+            // 换了前缀它就不会把这十几行当成手牌去校验（否则 hand= 计数会乱）。
+            try
+            {
+                bool anyModifier = hand.Any(c => c.DynamicVars.Any(v => v.Value.BaseValue != v.Value.PreviewValue));
+                if (anyModifier)
+                    foreach (CardEffect e in advice.DrawEffects)
+                        Entry.Log($"  抽牌堆 {e.Name} cost={e.Cost} dmg={e.Damage} block={e.Block} poison={e.Poison} draw={e.Draw} shivs={e.Shivs} vars=[{DamageModel.DescribeVars(e.Source!)}]");
+            }
+            catch (Exception ex)
+            {
+                Entry.Log("抽牌堆诊断输出失败：" + ex.Message);
+            }
             foreach (SimEnemy se in advice.EnemiesBefore)
             {
                 // ⚠️ 按屏幕编号取怪，不能按名字：同名怪（史莱姆群等）会取错，取不到还会把 null 传下去
