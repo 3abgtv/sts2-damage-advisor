@@ -77,9 +77,6 @@ public partial class AdvisorRoot : CanvasLayer
         "Tracking", "WraithForm", "Strangle", "Pounce", "BubbleBubble", "EchoingSlash",
         // 覆盖率补齐（刀刃陷阱/爆发/手上技法/触媒）与费用修正（精密瞄准）
         "KnifeTrap", "Burst", "HandTrick", "Accelerant", "Pinpoint",
-        // 播种金标实测用（2026-09-25）：精准 → 小刀伤害里含不含它；融入暗影 → 格挡预览含不含翻倍。
-        // 这两条决定影子要不要播种 ShivBonus / DoubleBlock（现在都没播，得先验）
-        "Accuracy", "Shadowmeld",
     };
 #endif
     private string _signature = "";
@@ -385,6 +382,10 @@ public partial class AdvisorRoot : CanvasLayer
     /// </summary>
     private static readonly (string ClassName, string Role)[] ProbeKit =
     {
+        // 播种金标实测（2026-09-25）先给这两张 —— 它们决定影子要不要播种 ShivBonus / DoubleBlock。
+        // 放最前面是为了"进战斗按两下 F9 就能验"，不用等抽牌、也不用按三十次。
+        ("Accuracy", "能力牌·精准（小刀 +4：验小刀预览含不含它）"),
+        ("Shadowmeld", "技能牌·融入暗影（格挡翻倍：验格挡预览含不含）"),
         ("Afterimage", "能力牌·余像（每打出一张牌 +1 格挡）"),
         ("DefendSilent", "格挡牌·防御"),
         ("DeadlyPoison", "状态牌·致命毒药（上毒）"),
