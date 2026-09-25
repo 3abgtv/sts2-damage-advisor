@@ -605,7 +605,10 @@ internal static class SimCommands
         if (card.GrantsAccelerant > 0) { sim.Accelerant += card.GrantsAccelerant * times; gained.Add($"触媒 {card.GrantsAccelerant * times}"); }
         if (card.Strangle > 0)
         {
-            sim.StrangleAmount = card.Strangle * times;
+            // 紧勒是敌人身上的 Counter 型能力 = **相加**（见主模型 ApplyCard 里那段说明）。
+            // 同一目标累加；换目标则从新目标自己的 0 起算（单槽模型的已知限制）。
+            sim.StrangleAmount = (targetIndex == sim.StrangleTarget ? sim.StrangleAmount : 0)
+                                 + card.Strangle * times;
             sim.StrangleTarget = targetIndex;
             gained.Add($"紧勒（{targetIndex}号 之后每张牌失去 {sim.StrangleAmount} 生命）");
         }

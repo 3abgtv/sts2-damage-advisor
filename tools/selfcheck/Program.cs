@@ -292,5 +292,19 @@ WeakCase("⑮ 原本就虚弱：不再减（12 不变）", preWeak: 2, wantHpLos
     Check("⑲b seed 不许含已在预览值里的字段", leaked.Length == 0 ? "无" : leaked, "无");
 }
 
+{
+    // ㉒ 紧勒是**相加**（游戏里 PowerStackType.Counter = "Amount is visible, and must be manually
+    //    incremented"，StranglePower 文档也说要处理 "especially when stacking"）。
+    //    以前主模型取 max、影子直接覆盖 —— 两张紧勒都只算 2。触发用的是**打出该牌之前**的层数
+    //    （游戏靠 amountsForPlayedCards 避免对自己触发），所以第一张不触发、第二张触发 2。
+    SimState s = Make(energy: 3, block: 0, hp: 40, incoming: 0, foeHp: 99);
+    for (int i = 0; i < 2; i++)
+        s.Hand.Add(new CardEffect { Name = "紧勒", Id = "紧勒" + i, ClassName = "Strangle",
+            Cost = 1, Damage = 8, Strangle = 2, IsAttack = true, Supported = true });
+    SimSearchResult r = SimSearch.Solve(s, 0);
+    Check("㉒ 两张紧勒相加：8 + 2 + 8 = 18", $"{r.Plan.Damage}", "18");
+    Check("㉒ 打完层数 4（不是 max 的 2）", $"{r.Terminal.StrangleAmount}", "4");
+}
+
 Console.WriteLine(fails == 0 ? "\n全部通过" : $"\n{fails} 项失败");
 return fails == 0 ? 0 : 1;

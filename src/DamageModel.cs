@@ -817,7 +817,14 @@ internal static class DamageModel
                 Intangible = state.Intangible + card.GrantsIntangible * times,
                 Accelerant = state.Accelerant + card.GrantsAccelerant * times,
                 // 紧勒：以最后打出的一张为准（同一回合叠加两次没有意义，取大的那个更安全）
-                StrangleAmount = card.Strangle * times > state.StrangleAmount ? card.Strangle * times : state.StrangleAmount,
+                // 紧勒：游戏里是**敌人身上**的 Counter 型能力 —— 官方对 PowerStackType.Counter 的定义是
+                // "Amount is visible, and must be manually incremented/decremented"，StranglePower 的文档
+                // 也明说它要处理 "especially when stacking"。所以是**相加**，不是取 max（以前写成 max，
+                // 两次紧勒只算 2）。同一目标累加；换了目标只能从新目标自己的 0 起算
+                // —— 单槽模型的已知限制：换目标后旧目标的紧勒不再跟踪，见 STATUS。
+                StrangleAmount = card.Strangle > 0
+                    ? (targetIndex == state.StrangleTarget ? state.StrangleAmount : 0) + card.Strangle * times
+                    : state.StrangleAmount,
                 StrangleTarget = card.Strangle > 0 ? targetIndex : state.StrangleTarget,
                 // 猛扑：打出后置位；打出一张技能牌就消耗掉；其它牌不影响
                 NextSkillFree = card.MakesNextSkillFree || (state.NextSkillFree && !card.IsSkill),
