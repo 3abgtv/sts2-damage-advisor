@@ -33,10 +33,47 @@ internal static class CloneProbe
     /// </summary>
     public static string ComparePlanText { get; private set; } = "";
 
+    /// <summary>
+    /// 联机降级：`Players.Count > 1` 时新引擎**完全不介入**（连快照都不捕获），继续用主模型。
+    ///
+    /// 理由是这套引擎的立足点：跨回合推演要求"未来唯一"，而联机的队友行动让这个前提不成立；
+    /// 而且影子 `Capture` 只读到了**自己**的状态。这条决策写在 `docs/engine-rewrite-roadmap.md`
+    /// 与 `STATUS.md` 里，但 2026-09-25 才发现一直没有对应的实现 ——
+    /// `ComparePlan`/`Run` 是无条件跑的，文档与代码不一致。
+    ///
+    /// 每个入口只在第一次提示时记一条日志，免得每次面板刷新都刷屏。
+    /// </summary>
+    private static bool DegradedToMainModel(CombatState state, string who)
+    {
+        try
+        {
+            int players = state.Players.Count;
+            if (players <= 1)
+                return false;
+            if (_mpLogged.Add(who))
+                Entry.Log($"{who}：联机（{players} 人）→ 新引擎不介入，继续用主模型（多人降级）");
+            return true;
+        }
+        catch
+        {
+            // 读不到玩家数就别拦着：宁可多跑一遍，也不要因为这里抛异常把面板搞坏
+            return false;
+        }
+    }
+
+    /// <summary>已经就"联机降级"提示过的入口（每个入口只说一次）。</summary>
+    private static readonly HashSet<string> _mpLogged = new(StringComparer.Ordinal);
+
     public static void ComparePlan(Player me, CombatState state, TurnAdvice advice)
     {
         try
         {
+            if (DegradedToMainModel(state, "对照重放"))
+            {
+                ComparePlanText = "";
+                return;
+            }
+
             if (advice.Plan.Actions.Count == 0)
             {
                 ComparePlanText = "";
@@ -68,6 +105,12 @@ internal static class CloneProbe
     {
         try
         {
+            if (DegradedToMainModel(state, "F5 探测"))
+            {
+                LastSequence = "联机降级：新引擎不介入（多人下「未来唯一」不成立，继续用主模型）";
+                _hasPending = false;
+                return;
+            }
             RunInner(me, state);
         }
         catch (Exception ex)
@@ -364,6 +407,11 @@ internal static class CloneProbe
     {
         if (!_hasPending)
             return;
+        if (DegradedToMainModel(state, "终态核对"))
+        {
+            _hasPending = false;
+            return;
+        }
         try
         {
             if (me.PlayerCombatState is null)
