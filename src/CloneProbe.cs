@@ -502,17 +502,17 @@ internal static class CloneProbe
             string modelOrder = Show(Order(advice.Plan));
             bool samePlan = engineOrder == modelOrder;
 
-            // ---- 面板：两边并排，顺带说清"照哪一行打" ----
-            string verdict = samePlan
-                ? "✓ 两边方案一致"
-                : "✗ 两边方案不同 → 照**新引擎**那行打（这次验的是它）";
-            if (search.PlanGaps.Count > 0)
-                verdict += $"　[计划含未镜像语义：{string.Join("、", search.PlanGaps)} → 本回合不核对]";
-            else if (search.HandGaps.Count > 0)
-                verdict += $"　[手牌含未镜像语义：{string.Join("、", search.HandGaps)} → 数字可能偏小]";
+            // ---- 面板：只留**一套**建议 ----
+            // 两边一样就只显示一次；不一样就只显示**新引擎**那套 —— 它是这次要验的、也是登记预测的那套。
+            // 主模型的计划在快照日志的「计划」行里另有记录，所以这里不留它并没有丢掉诊断线索。
+            string verdict = search.PlanGaps.Count > 0
+                ? $"　[计划含未镜像语义：{string.Join("、", search.PlanGaps)} → 本回合不核对]"
+                : search.HandGaps.Count > 0
+                    ? $"　[手牌含未镜像语义：{string.Join("、", search.HandGaps)} → 数字可能偏小]"
+                    : "";
 
-            LastSequence = $"新引擎：{engineOrder}　{Score(search.Plan)}（{search.Nodes} 状态）\n"
-                         + $"主模型：{modelOrder}　{Score(advice.Plan)}\n"
+            LastSequence = $"{engineOrder}　{Score(search.Plan)}（{search.Nodes} 状态）"
+                         + (samePlan ? "" : "　→ 照这个打（与主模型方案不同）")
                          + verdict;
 
             // ---- 登记预测：含未镜像语义、或两边都不打牌的计划不登记 ----
@@ -526,14 +526,14 @@ internal static class CloneProbe
                 SavePending(engineOrder, BuildSignature(me, state), search.Terminal);
             }
 
-            // 两边计划都写进日志：面板会刷新、日志留下来。以前这里只有新引擎那一边加一句
-            // "与主模型方案不同"，于是分歧**差在哪**只能靠人在面板消失前记住 —— 白跑一趟差分。
+            // 日志与面板一致：只写**新引擎**那一套，但**保留**"与主模型一致/不同"这个判据。
+            // 主模型的计划在快照日志的「计划」行里另有记录（含伤害/格挡/掉血/耗能），
+            // 需要两边对照时去那儿看 —— 所以这里省掉它不会丢掉线索，只是日志更干净。
             // 单行不换行：日志是一行一条记录，`grep 模拟自检` 要能一次捞到完整的那次。
             string foes = string.Join("、", search.Terminal.Foes.Where(f => f.Alive)
                 .Select(f => $"{f.Index}号 {f.Hp}血/{f.Block}格挡{StatusText(f)}"));
             return $"新引擎自算：{engineOrder}　{Score(search.Plan)}（{search.Nodes} 状态）"
                  + $"　→ 打完 敌 {foes}；我 {search.Terminal.PlayerEnergy}能量/{search.Terminal.PlayerBlock}格挡{PowerText(search.Terminal)}"
-                 + $"　▓ 主模型：{modelOrder}　{Score(advice.Plan)}"
                  + (samePlan ? "　（与主模型一致）" : "　⚠ 与主模型方案不同")
                  + (search.PlanGaps.Count > 0 ? "　[含未镜像语义，未登记核对]" : "")
                  + " ← 照这个顺序打，面板会自动核对终态";
